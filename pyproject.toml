@@ -1,0 +1,36 @@
+[project]
+name = "freelance-vk-bot"
+version = "0.1.0"
+description = "VK notifications for new Kwork and FL.ru projects in exact categories"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.11,<4",
+    "beautifulsoup4>=4.12,<5",
+    "kwork>=0.2,<0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.25,<1",
+    "ruff>=0.9,<1",
+]
+
+[project.scripts]
+freelance-bot = "freelance_bot.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/freelance_bot"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
