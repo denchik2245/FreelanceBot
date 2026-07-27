@@ -1,9 +1,11 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
 import logging
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
+from dotenv import load_dotenv
 
+from freelance_bot.ai import GigaChatProjectAdvisor
 from freelance_bot.config import Settings
 from freelance_bot.models import Project
 from freelance_bot.sources.fl import FlSource
@@ -11,6 +13,10 @@ from freelance_bot.sources.kwork import KworkSource
 from freelance_bot.sources.profi import ProfiSource
 from freelance_bot.storage import ProjectStore
 from freelance_bot.vk import (
+    COMMAND_CLEAR_CHAT,
+    COMMAND_CLEAR_STATISTICS,
+    COMMAND_CLIENT_CHOSE_OTHER,
+    COMMAND_CLIENT_REPLIED,
     COMMAND_FL,
     COMMAND_KWORK,
     COMMAND_MENU,
@@ -18,19 +24,17 @@ from freelance_bot.vk import (
     COMMAND_RECENT,
     COMMAND_REJECTED,
     COMMAND_RESPONDED,
-    COMMAND_RESPONSES,
-    COMMAND_CLIENT_CHOSE_OTHER,
-    COMMAND_CLIENT_REPLIED,
-    COMMAND_CLEAR_STATISTICS,
     COMMAND_RESPONSE_PROJECT,
+    COMMAND_RESPONSES,
     COMMAND_SETTINGS,
     COMMAND_STATISTICS,
     COMMAND_TOGGLE_FL,
     COMMAND_TOGGLE_KWORK,
     COMMAND_TOGGLE_PROFI,
+    COMMAND_WRITE_RESPONSE,
+    DISPLAY_TZ,
     BotCommand,
     VkBot,
-    DISPLAY_TZ,
     format_message,
     keyboard_json,
     project_keyboard_json,
@@ -63,9 +67,7 @@ async def _fetch_sources(
     kwork_lock: asyncio.Lock,
     profi_lock: asyncio.Lock,
 ) -> dict[str, list[Project]]:
-    async def locked_fetch(
-        source: FlSource | KworkSource | ProfiSource, lock: asyncio.Lock
-    ):
+    async def locked_fetch(source: FlSource | KworkSource | ProfiSource, lock: asyncio.Lock):
         async with lock:
             return await source.fetch()
 
@@ -97,6 +99,7 @@ async def _monitor_projects(
     kwork_lock: asyncio.Lock,
     profi_lock: asyncio.Lock,
     bot: VkBot,
+    advisor: GigaChatProjectAdvisor | None,
 ) -> None:
     while True:
         projects_by_source = await _fetch_sources(
@@ -113,14 +116,10 @@ async def _monitor_projects(
                 if store.is_seen(project.key):
                     continue
                 if first_source_run and not settings.send_existing_on_first_run:
-                    store.mark_seen(
-                        project.key, project.source, count_for_statistics=False
-                    )
+                    store.mark_seen(project.key, project.source, count_for_statistics=False)
                     continue
                 if not _is_fresh(project):
-                    store.mark_seen(
-                        project.key, project.source, count_for_statistics=False
-                    )
+                    store.mark_seen(project.key, project.source, count_for_statistics=False)
                     LOGGER.info(
                         "Старый проект пропущен: %s — %s (%s)",
                         project.source,
@@ -130,11 +129,37 @@ async def _monitor_projects(
                     continue
                 if not store.notifications_enabled(source):
                     store.mark_seen(project.key, project.source)
-                    LOGGER.info("Уведомления %s выключены; сохранено без отправки: %s", source, project.title)
+                    LOGGER.info(
+                        "Уведомления %s выключены; сохранено без отправки: %s",
+                        source,
+                        project.title,
+                    )
                     continue
+                assessment = None
                 try:
                     store.remember_project(project)
-                    await bot.send(project)
+                    if advisor is not None:
+                        assessment = store.get_ai_assessment(project.key)
+                        if assessment is None:
+                            assessment = await advisor.assess(project)
+                            store.remember_ai_assessment(assessment)
+                except Exception:
+                    LOGGER.exception("Не удалось проанализировать %s", project.key)
+                    if not settings.ai_fail_open:
+                        store.mark_seen(project.key, project.source)
+                        continue
+                    assessment = None
+                if assessment is not None and not assessment.suitable:
+                    store.mark_seen(project.key, project.source)
+                    LOGGER.info(
+                        "AI отфильтровал %s: %d/100 — %s",
+                        project.key,
+                        assessment.score,
+                        assessment.reason,
+                    )
+                    continue
+                try:
+                    await bot.send(project, assessment=assessment)
                 except Exception:
                     LOGGER.exception("Не удалось отправить %s", project.key)
                     continue
@@ -149,13 +174,13 @@ async def _monitor_projects(
         await asyncio.sleep(settings.poll_interval_seconds)
 
 
-def _latest_ten(projects: list[Project]) -> list[Project]:
+def _latest_five(projects: list[Project]) -> list[Project]:
     def sort_key(project: Project) -> tuple[float, int]:
         timestamp = project.published_at.timestamp() if project.published_at else 0.0
         numeric_id = int(project.external_id) if project.external_id.isdigit() else 0
         return timestamp, numeric_id
 
-    return sorted(projects, key=sort_key, reverse=True)[:10]
+    return sorted(projects, key=sort_key, reverse=True)[:5]
 
 
 def _format_statistics(store: ProjectStore) -> str:
@@ -206,19 +231,16 @@ async def _listen_for_commands(
     fl_lock: asyncio.Lock,
     kwork_lock: asyncio.Lock,
     profi_lock: asyncio.Lock,
+    advisor: GigaChatProjectAdvisor | None,
 ) -> None:
     command_lock = asyncio.Lock()
 
-    async def edit_project_message(
-        event: BotCommand, message: str, keyboard: str
-    ) -> None:
+    async def edit_project_message(event: BotCommand, message: str, keyboard: str) -> None:
         if event.event_id is not None and event.conversation_message_id is not None:
             try:
                 await bot.edit_text(event.conversation_message_id, message, keyboard=keyboard)
             except Exception:
-                LOGGER.warning(
-                    "Не удалось обновить кнопки проекта VK", exc_info=True
-                )
+                LOGGER.warning("Не удалось обновить кнопки проекта VK", exc_info=True)
 
     async def show_menu() -> None:
         await bot.hide_ui()
@@ -243,10 +265,7 @@ async def _listen_for_commands(
                 f"Активных откликов — {len(active)}.\nВыберите проект:"
             )
         else:
-            message = (
-                f"{_format_feedback_summary(store)}\n\n"
-                "Активных откликов пока нет."
-            )
+            message = f"{_format_feedback_summary(store)}\n\nАктивных откликов пока нет."
         await bot.set_persistent_keyboard(responses_keyboard_json(projects))
         await bot.replace_ui(message)
 
@@ -254,16 +273,87 @@ async def _listen_for_commands(
         await bot.set_persistent_keyboard(keyboard)
         await bot.replace_ui(message)
 
+    async def refresh_project_description(project: Project) -> Project:
+        if project.description:
+            return project
+        try:
+            if project.source == "Kwork":
+                async with kwork_lock:
+                    projects = await kwork_source.fetch()
+            elif project.source == "FL.ru":
+                async with fl_lock:
+                    projects = await fl_source.fetch()
+            elif project.source == "Profi.ru" and profi_source is not None:
+                async with profi_lock:
+                    projects = await profi_source.fetch()
+            else:
+                return project
+        except Exception:
+            LOGGER.warning(
+                "Не удалось обновить описание проекта %s перед AI-откликом",
+                project.key,
+                exc_info=True,
+            )
+            return project
+        refreshed = next((item for item in projects if item.key == project.key), None)
+        if refreshed is not None:
+            store.remember_project(refreshed)
+            return refreshed
+        return project
+
     async def handle(event: BotCommand) -> None:
         command = event.name
+        if command == COMMAND_WRITE_RESPONSE:
+            if event.project_key is None:
+                return
+            project = store.get_project(event.project_key)
+            if project is None:
+                LOGGER.warning("Проект для AI-отклика не найден: %s", event.project_key)
+                await bot.send_text("⚠️ Проект не найден в локальной истории.", keyboard=False)
+                return
+            assessment = store.get_ai_assessment(project.key)
+            if advisor is None:
+                await bot.send_text(
+                    "⚠️ GigaChat отключён. Проверьте AI_ENABLED и ключ API.",
+                    keyboard=False,
+                )
+                return
+            project = await refresh_project_description(project)
+            try:
+                if assessment is None:
+                    try:
+                        assessment = await advisor.assess(project)
+                        store.remember_ai_assessment(assessment)
+                    except Exception:
+                        LOGGER.warning(
+                            "AI-оценка %s недоступна; пишу отклик без неё",
+                            project.key,
+                            exc_info=True,
+                        )
+                response_text = await advisor.generate_response(
+                    project,
+                    previous_response=store.get_ai_response(project.key),
+                )
+                store.remember_ai_response(
+                    project.key,
+                    response_text,
+                    advisor.response_model,
+                )
+            except Exception:
+                LOGGER.exception("Не удалось создать AI-отклик для %s", project.key)
+                await bot.send_text(
+                    "⚠️ Не удалось написать отклик. Попробуйте нажать кнопку ещё раз.",
+                    keyboard=False,
+                )
+                return
+            await bot.send_text(response_text, keyboard=False)
+            return
         if command in {COMMAND_RESPONDED, COMMAND_REJECTED}:
             if event.project_key is None:
                 return
             decision = "responded" if command == COMMAND_RESPONDED else "rejected"
             try:
-                selected_decision = store.toggle_project_decision(
-                    event.project_key, decision
-                )
+                selected_decision = store.toggle_project_decision(event.project_key, decision)
             except KeyError:
                 LOGGER.warning("Проект не найден в локальной истории: %s", event.project_key)
                 return
@@ -275,7 +365,10 @@ async def _listen_for_commands(
             ):
                 await edit_project_message(
                     event,
-                    format_message(project),
+                    format_message(
+                        project,
+                        assessment=store.get_ai_assessment(project.key),
+                    ),
                     project_keyboard_json(project.key, selected_decision),
                 )
             return
@@ -283,9 +376,7 @@ async def _listen_for_commands(
             if event.project_key is None:
                 return
             outcome = (
-                "client_replied"
-                if command == COMMAND_CLIENT_REPLIED
-                else "client_chose_other"
+                "client_replied" if command == COMMAND_CLIENT_REPLIED else "client_chose_other"
             )
             if not store.set_project_outcome(event.project_key, outcome):
                 LOGGER.warning("Исход выбран без отклика: %s", event.project_key)
@@ -305,6 +396,25 @@ async def _listen_for_commands(
             store.reset_statistics()
             await show_notice(_format_statistics(store), statistics_keyboard_json())
             return
+        if command == COMMAND_CLEAR_CHAT:
+            try:
+                deleted, failed = await bot.clear_outgoing_messages()
+            except Exception:
+                LOGGER.exception("Не удалось очистить сообщения бота в VK")
+                await bot.send_text(
+                    "⚠️ Не удалось очистить чат. Попробуйте ещё раз.",
+                    keyboard=settings_keyboard_json(
+                        kwork_enabled=store.notifications_enabled("Kwork"),
+                        fl_enabled=store.notifications_enabled("FL.ru"),
+                        profi_enabled=store.notifications_enabled("Profi.ru"),
+                    ),
+                )
+                return
+            result = f"✅ Удалено сообщений бота: {deleted}."
+            if failed:
+                result += f" Не удалось удалить: {failed} — VK ограничил их удаление."
+            await bot.send_text(result, keyboard=keyboard_json())
+            return
         if command == COMMAND_RESPONSES:
             await show_responses()
             return
@@ -322,12 +432,11 @@ async def _listen_for_commands(
                 await show_responses()
                 return
             status = (
-                "💬 Клиент написал"
-                if feedback[1] == "client_replied"
-                else "⏳ Ждём ответа клиента"
+                "💬 Клиент написал" if feedback[1] == "client_replied" else "⏳ Ждём ответа клиента"
             )
             await show_notice(
-                f"{format_message(project)}\n\n{status}",
+                f"{format_message(project, assessment=store.get_ai_assessment(project.key))}"
+                f"\n\n{status}",
                 response_detail_keyboard_json(project.key),
             )
             return
@@ -380,7 +489,7 @@ async def _listen_for_commands(
                     recent_keyboard_json(),
                 )
                 return
-            latest = _latest_ten(projects)
+            latest = _latest_five(projects)
             if not latest:
                 await show_notice(
                     f"В выбранных рубриках {source_name} проектов пока нет.",
@@ -391,10 +500,18 @@ async def _listen_for_commands(
             for project in reversed(latest):
                 store.remember_project(project)
                 feedback = store.get_project_feedback(project.key)
+                assessment = store.get_ai_assessment(project.key)
+                if advisor is not None and assessment is None:
+                    try:
+                        assessment = await advisor.assess(project)
+                        store.remember_ai_assessment(assessment)
+                    except Exception:
+                        LOGGER.exception("Не удалось оценить проект ручной выдачи %s", project.key)
                 await bot.send(
                     project,
                     test_view=True,
                     decision=feedback[0] if feedback is not None else None,
+                    assessment=assessment,
                 )
 
     await bot.listen(handle)
@@ -405,7 +522,28 @@ async def run(settings: Settings) -> None:
     headers = {"User-Agent": "Mozilla/5.0 (compatible; FreelanceCategoryNotifier/1.0)"}
     store = ProjectStore(settings.database_path)
     kwork_source = KworkSource(settings.kwork_login, settings.kwork_password)
+    advisor: GigaChatProjectAdvisor | None = None
     try:
+        if settings.ai_enabled:
+            advisor = GigaChatProjectAdvisor.from_paths(
+                profile_path=settings.ai_profile_path,
+                filter_prompt_path=settings.ai_filter_prompt_path,
+                response_prompt_path=settings.ai_response_prompt_path,
+                credentials=settings.gigachat_credentials,
+                scope=settings.gigachat_scope,
+                base_url=settings.gigachat_base_url,
+                ca_bundle_file=settings.gigachat_ca_bundle_file,
+                filter_model=settings.gigachat_filter_model,
+                response_model=settings.gigachat_response_model,
+                min_score=settings.ai_min_score,
+            )
+            await advisor.__aenter__()
+            LOGGER.info(
+                "AI включён: фильтр=%s, отклики=%s, порог=%d",
+                settings.gigachat_filter_model,
+                settings.gigachat_response_model,
+                settings.ai_min_score,
+            )
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             fl_source = FlSource(session)
             profi_source = (
@@ -414,9 +552,7 @@ async def run(settings: Settings) -> None:
                 else None
             )
             if profi_source is None:
-                LOGGER.warning(
-                    "Profi.ru отключён: заполните PROFI_LOGIN и PROFI_PASSWORD в .env"
-                )
+                LOGGER.warning("Profi.ru отключён: заполните PROFI_LOGIN и PROFI_PASSWORD в .env")
             bot = VkBot(
                 session,
                 settings.vk_group_token,
@@ -426,7 +562,7 @@ async def run(settings: Settings) -> None:
             fl_lock = asyncio.Lock()
             kwork_lock = asyncio.Lock()
             profi_lock = asyncio.Lock()
-            if store.get_state("vk_keyboard_version") != "8":
+            if store.get_state("vk_keyboard_version") != "10":
                 try:
                     await bot.clear_persistent_keyboard()
                 except Exception:
@@ -438,8 +574,7 @@ async def run(settings: Settings) -> None:
                         await bot.refresh_recent_project_keyboards(
                             lambda project_key: (
                                 feedback[0]
-                                if (feedback := store.get_project_feedback(project_key))
-                                is not None
+                                if (feedback := store.get_project_feedback(project_key)) is not None
                                 else None
                             )
                         )
@@ -448,7 +583,7 @@ async def run(settings: Settings) -> None:
                             "Не удалось обновить кнопки старых проектов VK",
                             exc_info=True,
                         )
-                    store.set_state("vk_keyboard_version", "8")
+                    store.set_state("vk_keyboard_version", "10")
                 except Exception:
                     LOGGER.warning(
                         "Не удалось установить постоянную клавиатуру VK",
@@ -465,6 +600,7 @@ async def run(settings: Settings) -> None:
                     kwork_lock,
                     profi_lock,
                     bot,
+                    advisor,
                 ),
                 _listen_for_commands(
                     bot,
@@ -475,14 +611,18 @@ async def run(settings: Settings) -> None:
                     fl_lock,
                     kwork_lock,
                     profi_lock,
+                    advisor,
                 ),
             )
     finally:
+        if advisor is not None:
+            await advisor.__aexit__(None, None, None)
         await kwork_source.close()
         store.close()
 
 
 def main() -> None:
+    load_dotenv()
     settings = Settings.from_env()
     logging.basicConfig(
         level=getattr(logging, settings.log_level, logging.INFO),

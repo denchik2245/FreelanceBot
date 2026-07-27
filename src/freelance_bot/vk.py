@@ -1,15 +1,15 @@
 import asyncio
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from datetime import timedelta, timezone
 import json
 import logging
 import random
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import timedelta, timezone
 from typing import Any
 
 import aiohttp
 
-from freelance_bot.models import Project
+from freelance_bot.models import AiAssessment, Project
 
 LOGGER = logging.getLogger(__name__)
 COMMAND_KWORK = "last_kwork"
@@ -19,6 +19,7 @@ COMMAND_MENU = "menu"
 COMMAND_SETTINGS = "settings"
 COMMAND_STATISTICS = "statistics"
 COMMAND_CLEAR_STATISTICS = "clear_statistics"
+COMMAND_CLEAR_CHAT = "clear_chat"
 COMMAND_RESPONSES = "responses"
 COMMAND_RECENT = "recent"
 COMMAND_TOGGLE_KWORK = "toggle_kwork"
@@ -26,6 +27,7 @@ COMMAND_TOGGLE_FL = "toggle_fl"
 COMMAND_TOGGLE_PROFI = "toggle_profi"
 COMMAND_RESPONDED = "responded"
 COMMAND_REJECTED = "rejected"
+COMMAND_WRITE_RESPONSE = "write_response"
 COMMAND_CLIENT_REPLIED = "client_replied"
 COMMAND_CLIENT_CHOSE_OTHER = "client_chose_other"
 COMMAND_RESPONSE_PROJECT = "response_project"
@@ -38,6 +40,7 @@ ALL_COMMANDS = {
     COMMAND_SETTINGS,
     COMMAND_STATISTICS,
     COMMAND_CLEAR_STATISTICS,
+    COMMAND_CLEAR_CHAT,
     COMMAND_RESPONSES,
     COMMAND_RECENT,
     COMMAND_TOGGLE_KWORK,
@@ -45,6 +48,7 @@ ALL_COMMANDS = {
     COMMAND_TOGGLE_PROFI,
     COMMAND_RESPONDED,
     COMMAND_REJECTED,
+    COMMAND_WRITE_RESPONSE,
     COMMAND_CLIENT_REPLIED,
     COMMAND_CLIENT_CHOSE_OTHER,
     COMMAND_RESPONSE_PROJECT,
@@ -72,7 +76,12 @@ def _clip(text: str, limit: int) -> str:
     return compact if len(compact) <= limit else compact[: limit - 1].rstrip() + "…"
 
 
-def format_message(project: Project, *, test_view: bool = False) -> str:
+def format_message(
+    project: Project,
+    *,
+    test_view: bool = False,
+    assessment: AiAssessment | None = None,
+) -> str:
     del test_view  # Тестовая и автоматическая выдача намеренно выглядят одинаково.
     source = "Kwork.ru" if project.source == "Kwork" else project.source
     lines = [
@@ -87,6 +96,14 @@ def format_message(project: Project, *, test_view: bool = False) -> str:
             published = published.replace(tzinfo=timezone.utc)
         lines.append(f"🕒 {published.astimezone(DISPLAY_TZ):%d.%m.%Y %H:%M}")
     lines.extend(("", project.url))
+    if assessment is not None:
+        lines.extend(
+            (
+                "",
+                f"🤖 Оценка: {assessment.score}/100",
+                f"Почему: {_clip(assessment.reason, 500)}",
+            )
+        )
     return "\n".join(lines)
 
 
@@ -133,10 +150,10 @@ def recent_keyboard_json() -> str:
             "inline": False,
             "buttons": [
                 [
-                    button("Последние 10 Kwork", COMMAND_KWORK),
-                    button("Последние 10 FL.ru", COMMAND_FL),
+                    button("Последние 5 Kwork", COMMAND_KWORK),
+                    button("Последние 5 FL.ru", COMMAND_FL),
                 ],
-                [button("Последние 10 Profi.ru", COMMAND_PROFI)],
+                [button("Последние 5 Profi.ru", COMMAND_PROFI)],
                 [button("← Главное меню", COMMAND_MENU)],
             ],
         },
@@ -175,7 +192,8 @@ def project_keyboard_json(project_key: str, decision: str | None = None) -> str:
                         COMMAND_REJECTED,
                         "negative" if decision == "rejected" else "secondary",
                     ),
-                ]
+                ],
+                [button("✍ Написать отклик", COMMAND_WRITE_RESPONSE, "primary")],
             ],
         },
         ensure_ascii=False,
@@ -220,9 +238,7 @@ def response_detail_keyboard_json(project_key: str) -> str:
                 "action": {
                     "type": "callback",
                     "label": "← К откликам",
-                    "payload": json.dumps(
-                        {"command": COMMAND_RESPONSES}, ensure_ascii=False
-                    ),
+                    "payload": json.dumps({"command": COMMAND_RESPONSES}, ensure_ascii=False),
                 },
                 "color": "secondary",
             }
@@ -231,9 +247,7 @@ def response_detail_keyboard_json(project_key: str) -> str:
     return json.dumps(keyboard, ensure_ascii=False, separators=(",", ":"))
 
 
-def settings_keyboard_json(
-    *, kwork_enabled: bool, fl_enabled: bool, profi_enabled: bool
-) -> str:
+def settings_keyboard_json(*, kwork_enabled: bool, fl_enabled: bool, profi_enabled: bool) -> str:
     def toggle(label: str, command: str, enabled: bool) -> dict[str, Any]:
         status = "✅ вкл" if enabled else "⛔ выкл"
         return {
@@ -253,6 +267,14 @@ def settings_keyboard_json(
         },
         "color": "secondary",
     }
+    clear_chat = {
+        "action": {
+            "type": "callback",
+            "label": "🗑 Очистить чат",
+            "payload": json.dumps({"command": COMMAND_CLEAR_CHAT}, ensure_ascii=False),
+        },
+        "color": "negative",
+    }
     keyboard = {
         "one_time": False,
         "inline": False,
@@ -260,6 +282,7 @@ def settings_keyboard_json(
             [toggle("Kwork", COMMAND_TOGGLE_KWORK, kwork_enabled)],
             [toggle("FL.ru", COMMAND_TOGGLE_FL, fl_enabled)],
             [toggle("Profi.ru", COMMAND_TOGGLE_PROFI, profi_enabled)],
+            [clear_chat],
             [back],
         ],
     }
@@ -277,9 +300,7 @@ def back_keyboard_json() -> str:
                         "action": {
                             "type": "callback",
                             "label": "← Главное меню",
-                            "payload": json.dumps(
-                                {"command": COMMAND_MENU}, ensure_ascii=False
-                            ),
+                            "payload": json.dumps({"command": COMMAND_MENU}, ensure_ascii=False),
                         },
                         "color": "secondary",
                     }
@@ -368,6 +389,9 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
 
     text = str(message.get("text", "")).strip().casefold()
     text_commands = {
+        "последние 5 kwork": COMMAND_KWORK,
+        "последние 5 fl.ru": COMMAND_FL,
+        "последние 5 profi.ru": COMMAND_PROFI,
         "последние 10 kwork": COMMAND_KWORK,
         "последние 10 fl.ru": COMMAND_FL,
         "последние 10 profi.ru": COMMAND_PROFI,
@@ -450,9 +474,7 @@ class VkBot:
             return False
         return True
 
-    async def edit_text(
-        self, conversation_message_id: int, message: str, *, keyboard: str
-    ) -> None:
+    async def edit_text(self, conversation_message_id: int, message: str, *, keyboard: str) -> None:
         await self._api(
             "messages.edit",
             peer_id=self._user_id,
@@ -496,9 +518,7 @@ class VkBot:
         )
         if isinstance(message_id, int):
             try:
-                await self._api(
-                    "messages.delete", message_ids=message_id, delete_for_all=1
-                )
+                await self._api("messages.delete", message_ids=message_id, delete_for_all=1)
             except VkApiError:
                 LOGGER.debug("Не удалось удалить служебное сообщение", exc_info=True)
 
@@ -536,9 +556,7 @@ class VkBot:
         self._ui_message_id = message_id if isinstance(message_id, int) else None
 
     async def cleanup_old_navigation_messages(self, *, limit: int = 100) -> None:
-        response = await self._api(
-            "messages.getHistory", user_id=self._user_id, count=limit
-        )
+        response = await self._api("messages.getHistory", user_id=self._user_id, count=limit)
         items = response.get("items", []) if isinstance(response, dict) else []
         exact = {
             "Выберите действие:",
@@ -560,8 +578,7 @@ class VkBot:
             and item.get("out")
             and item.get("id") is not None
             and (
-                str(item.get("text", "")) in exact
-                or str(item.get("text", "")).startswith(prefixes)
+                str(item.get("text", "")) in exact or str(item.get("text", "")).startswith(prefixes)
             )
         ]
         if message_ids:
@@ -571,13 +588,66 @@ class VkBot:
                 delete_for_all=1,
             )
 
+    async def clear_outgoing_messages(
+        self, *, page_size: int = 200, batch_size: int = 100
+    ) -> tuple[int, int]:
+        """Delete this bot's visible messages from the private conversation."""
+        message_ids: list[int] = []
+        offset = 0
+        while True:
+            response = await self._api(
+                "messages.getHistory",
+                user_id=self._user_id,
+                count=page_size,
+                offset=offset,
+            )
+            items = response.get("items", []) if isinstance(response, dict) else []
+            if not isinstance(items, list) or not items:
+                break
+            message_ids.extend(
+                int(item["id"])
+                for item in items
+                if isinstance(item, dict) and item.get("out") and item.get("id") is not None
+            )
+            offset += len(items)
+            total = int(response.get("count", offset)) if isinstance(response, dict) else offset
+            if offset >= total:
+                break
+            await asyncio.sleep(0.34)
+
+        deleted = 0
+        failed = 0
+        for start in range(0, len(message_ids), batch_size):
+            batch = message_ids[start : start + batch_size]
+            try:
+                result = await self._api(
+                    "messages.delete",
+                    message_ids=",".join(map(str, batch)),
+                    delete_for_all=1,
+                )
+            except VkApiError:
+                LOGGER.warning("VK не разрешил удалить часть старых сообщений", exc_info=True)
+                failed += len(batch)
+                continue
+            if isinstance(result, dict):
+                batch_deleted = sum(
+                    bool(result.get(str(message_id), result.get(message_id)))
+                    for message_id in batch
+                )
+                deleted += batch_deleted
+                failed += len(batch) - batch_deleted
+            else:
+                deleted += len(batch)
+            if start + batch_size < len(message_ids):
+                await asyncio.sleep(0.34)
+        self._ui_message_id = None
+        return deleted, failed
+
     async def refresh_recent_project_keyboards(
         self, decision_for: Callable[[str], str | None], *, limit: int = 100
     ) -> None:
         """Migrate recently sent project cards to the current button states."""
-        response = await self._api(
-            "messages.getHistory", user_id=self._user_id, count=limit
-        )
+        response = await self._api("messages.getHistory", user_id=self._user_id, count=limit)
         items = response.get("items", []) if isinstance(response, dict) else []
         for item in items:
             if not isinstance(item, dict) or not item.get("out"):
@@ -602,15 +672,11 @@ class VkBot:
                 await self.edit_text(
                     int(conversation_message_id),
                     str(item.get("text", "")),
-                    keyboard=project_keyboard_json(
-                        project_key, decision_for(project_key)
-                    ),
+                    keyboard=project_keyboard_json(project_key, decision_for(project_key)),
                 )
             except VkApiError:
                 # VK limits how long a sent message can be edited.
-                LOGGER.debug(
-                    "Не удалось обновить старую карточку %s", project_key, exc_info=True
-                )
+                LOGGER.debug("Не удалось обновить старую карточку %s", project_key, exc_info=True)
 
     async def send(
         self,
@@ -618,9 +684,10 @@ class VkBot:
         *,
         test_view: bool = False,
         decision: str | None = None,
+        assessment: AiAssessment | None = None,
     ) -> None:
         await self.send_text(
-            format_message(project, test_view=test_view),
+            format_message(project, test_view=test_view, assessment=assessment),
             keyboard=project_keyboard_json(project.key, decision),
         )
 
@@ -717,7 +784,9 @@ class VkBot:
                                 try:
                                     await self.answer_event(command)
                                 except VkApiError:
-                                    LOGGER.debug("Не удалось подтвердить callback VK", exc_info=True)
+                                    LOGGER.debug(
+                                        "Не удалось подтвердить callback VK", exc_info=True
+                                    )
                             elif command.conversation_message_id is not None:
                                 await self.delete_incoming(command.conversation_message_id)
                             await handler(command)

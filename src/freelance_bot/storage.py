@@ -1,8 +1,8 @@
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-import sqlite3
 
-from freelance_bot.models import Project
+from freelance_bot.models import AiAssessment, Project
 
 
 class ProjectStore:
@@ -25,6 +25,7 @@ class ProjectStore:
                 source TEXT NOT NULL,
                 external_id TEXT NOT NULL,
                 title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
                 price TEXT NOT NULL,
                 url TEXT NOT NULL,
                 category TEXT NOT NULL,
@@ -33,6 +34,14 @@ class ProjectStore:
             )
             """
         )
+        catalog_columns = {
+            str(row[1])
+            for row in self._connection.execute("PRAGMA table_info(project_catalog)").fetchall()
+        }
+        if "description" not in catalog_columns:
+            self._connection.execute(
+                "ALTER TABLE project_catalog ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+            )
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS project_feedback (
@@ -41,6 +50,32 @@ class ProjectStore:
                 outcome TEXT CHECK(outcome IN ('client_replied', 'client_chose_other')),
                 decision_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 outcome_at TEXT,
+                FOREIGN KEY(project_key) REFERENCES project_catalog(project_key)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_ai_assessments (
+                project_key TEXT PRIMARY KEY,
+                suitable INTEGER NOT NULL CHECK(suitable IN (0, 1)),
+                score INTEGER NOT NULL CHECK(score BETWEEN 0 AND 100),
+                reason TEXT NOT NULL,
+                response_text TEXT NOT NULL,
+                filter_model TEXT NOT NULL,
+                response_model TEXT NOT NULL,
+                analyzed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(project_key) REFERENCES project_catalog(project_key)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_ai_responses (
+                project_key TEXT PRIMARY KEY,
+                response_text TEXT NOT NULL,
+                response_model TEXT NOT NULL,
+                generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(project_key) REFERENCES project_catalog(project_key)
             )
             """
@@ -98,10 +133,12 @@ class ProjectStore:
         self._connection.execute(
             """
             INSERT INTO project_catalog(
-                project_key, source, external_id, title, price, url, category, published_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                project_key, source, external_id, title, description,
+                price, url, category, published_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(project_key) DO UPDATE SET
                 title = excluded.title,
+                description = excluded.description,
                 price = excluded.price,
                 url = excluded.url,
                 category = excluded.category,
@@ -113,6 +150,7 @@ class ProjectStore:
                 project.source,
                 project.external_id,
                 project.title,
+                project.description,
                 project.price,
                 project.url,
                 project.category,
@@ -120,6 +158,84 @@ class ProjectStore:
             ),
         )
         self._connection.commit()
+
+    def remember_ai_response(self, project_key: str, response_text: str, model: str) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO project_ai_responses(
+                project_key, response_text, response_model, generated_at
+            )
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(project_key) DO UPDATE SET
+                response_text = excluded.response_text,
+                response_model = excluded.response_model,
+                generated_at = CURRENT_TIMESTAMP
+            """,
+            (project_key, response_text, model),
+        )
+        self._connection.commit()
+
+    def get_ai_response(self, project_key: str) -> str:
+        row = self._connection.execute(
+            "SELECT response_text FROM project_ai_responses WHERE project_key = ?",
+            (project_key,),
+        ).fetchone()
+        if row is not None:
+            return str(row[0])
+        legacy = self._connection.execute(
+            "SELECT response_text FROM project_ai_assessments WHERE project_key = ?",
+            (project_key,),
+        ).fetchone()
+        return str(legacy[0]) if legacy is not None and legacy[0] else ""
+
+    def remember_ai_assessment(self, assessment: AiAssessment) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO project_ai_assessments(
+                project_key, suitable, score, reason, response_text,
+                filter_model, response_model, analyzed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(project_key) DO UPDATE SET
+                suitable = excluded.suitable,
+                score = excluded.score,
+                reason = excluded.reason,
+                response_text = excluded.response_text,
+                filter_model = excluded.filter_model,
+                response_model = excluded.response_model,
+                analyzed_at = CURRENT_TIMESTAMP
+            """,
+            (
+                assessment.project_key,
+                int(assessment.suitable),
+                assessment.score,
+                assessment.reason,
+                assessment.response_text,
+                assessment.filter_model,
+                assessment.response_model,
+            ),
+        )
+        self._connection.commit()
+
+    def get_ai_assessment(self, project_key: str) -> AiAssessment | None:
+        row = self._connection.execute(
+            """
+            SELECT suitable, score, reason, response_text, filter_model, response_model
+            FROM project_ai_assessments
+            WHERE project_key = ?
+            """,
+            (project_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return AiAssessment(
+            project_key=project_key,
+            suitable=bool(row[0]),
+            score=int(row[1]),
+            reason=str(row[2]),
+            response_text=str(row[3]),
+            filter_model=str(row[4]),
+            response_model=str(row[5]),
+        )
 
     def set_project_decision(self, project_key: str, decision: str) -> bool:
         if decision not in {"responded", "rejected"}:
@@ -190,22 +306,22 @@ class ProjectStore:
     def get_project(self, project_key: str) -> Project | None:
         row = self._connection.execute(
             """
-            SELECT source, external_id, title, price, url, category, published_at
+            SELECT source, external_id, title, description, price, url, category, published_at
             FROM project_catalog WHERE project_key = ?
             """,
             (project_key,),
         ).fetchone()
         if row is None:
             return None
-        published_at = datetime.fromisoformat(row[6]) if row[6] else None
+        published_at = datetime.fromisoformat(row[7]) if row[7] else None
         return Project(
             source=row[0],
             external_id=row[1],
             title=row[2],
-            description="",
-            price=row[3],
-            url=row[4],
-            category=row[5],
+            description=row[3],
+            price=row[4],
+            url=row[5],
+            category=row[6],
             published_at=published_at,
         )
 
@@ -269,8 +385,7 @@ class ProjectStore:
     def project_statistics(self) -> dict[str, dict[str, int]]:
         periods = {"day": "-1 day", "week": "-7 days", "month": "-30 days"}
         result = {
-            source: {period: 0 for period in periods}
-            for source in ("Kwork", "FL.ru", "Profi.ru")
+            source: {period: 0 for period in periods} for source in ("Kwork", "FL.ru", "Profi.ru")
         }
         started_at = self.get_state("statistics_started_at") or "1970-01-01 00:00:00"
         for period, modifier in periods.items():

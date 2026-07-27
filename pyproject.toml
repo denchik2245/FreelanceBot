@@ -6,7 +6,9 @@ requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.11,<4",
     "beautifulsoup4>=4.12,<5",
+    "gigachat>=0.2.1,<0.3",
     "kwork>=0.2,<0.3",
+    "python-dotenv>=1,<2",
 ]
 
 [project.optional-dependencies]
@@ -18,6 +20,7 @@ dev = [
 
 [project.scripts]
 freelance-bot = "freelance_bot.main:main"
+gigachat-check = "freelance_bot.check_gigachat:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -1,7 +1,8 @@
-from pathlib import Path
+import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 
-from freelance_bot.models import Project
+from freelance_bot.models import AiAssessment, Project
 from freelance_bot.storage import ProjectStore
 
 
@@ -33,13 +34,26 @@ def test_store(tmp_path: Path) -> None:
         "Kwork",
         "42",
         "Лендинг",
-        "",
+        "Нужно разработать дизайн лендинга",
         "до 500 ₽",
         "https://kwork.ru/projects/42/view",
         "Веб-дизайн",
         datetime(2026, 7, 17, tzinfo=timezone.utc),
     )
     store.remember_project(project)
+    assessment = AiAssessment(
+        project_key=project.key,
+        suitable=True,
+        score=88,
+        reason="Нужен дизайн лендинга",
+        response_text="Готов обсудить задачу.",
+        filter_model="GigaChat-2",
+        response_model="GigaChat-2-Pro",
+    )
+    store.remember_ai_assessment(assessment)
+    store.remember_ai_response(project.key, "Новый отклик", "GigaChat-2-Pro")
+    assert store.get_ai_assessment(project.key) == assessment
+    assert store.get_ai_response(project.key) == "Новый отклик"
     assert store.set_project_decision(project.key, "responded")
     assert store.get_project_feedback(project.key) == ("responded", None)
     assert store.feedback_counts()["responded"] == 1
@@ -54,4 +68,41 @@ def test_store(tmp_path: Path) -> None:
     assert store.get_project_feedback(project.key) == ("rejected", None)
     assert store.toggle_project_decision(project.key, "rejected") is None
     assert store.get_project_feedback(project.key) is None
+    store.close()
+
+
+def test_store_migrates_and_saves_project_description(tmp_path: Path) -> None:
+    path = tmp_path / "old.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """
+        CREATE TABLE project_catalog (
+            project_key TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            price TEXT NOT NULL,
+            url TEXT NOT NULL,
+            category TEXT NOT NULL,
+            published_at TEXT,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    store = ProjectStore(path)
+    project = Project(
+        "FL.ru",
+        "123",
+        "Дизайн сайта",
+        "Полное описание проекта",
+        "",
+        "https://example.com/123",
+        "Дизайн",
+    )
+    store.remember_project(project)
+
+    assert store.get_project(project.key) == project
     store.close()

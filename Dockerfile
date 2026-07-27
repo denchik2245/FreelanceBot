@@ -6,6 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY config ./config
+COPY certs ./certs
 RUN pip install --no-cache-dir .
 
 RUN mkdir -p /app/data
