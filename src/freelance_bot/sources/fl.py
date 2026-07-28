@@ -1,7 +1,6 @@
-import asyncio
-from datetime import datetime, timedelta, timezone
 import logging
 import re
+from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import urljoin
 
 import aiohttp
@@ -12,6 +11,9 @@ from freelance_bot.models import Project
 LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://www.fl.ru"
 MOSCOW_TZ = timezone(timedelta(hours=3))
+ALL_PROJECTS_CATEGORY = "Все категории"
+MAX_PAGES = 10
+MAX_PROJECT_AGE = timedelta(hours=24)
 RUSSIAN_MONTHS = {
     "января": 1,
     "февраля": 2,
@@ -27,22 +29,6 @@ RUSSIAN_MONTHS = {
     "декабря": 12,
 }
 
-# Это именно выбранные на скриншоте подкатегории, а не ключевые слова.
-FL_CATEGORIES: tuple[tuple[str, str], ...] = (
-    ("Сайты / Дизайн сайтов", "/projects/category/saity/web-dizajner-razrabotka-sajtov/"),
-    ("Сайты / Тильда", "/projects/category/saity/tilda/"),
-    ("Сайты / Редизайн сайтов", "/projects/category/saity/redizain-saitov/"),
-    ("Сайты / Лендинги", "/projects/category/saity/landing/"),
-    ("Дизайн / Дизайн сайтов", "/projects/category/dizajn/web-dizajner-verstalschik-dizajn/"),
-    ("Дизайн / Интерфейсы", "/projects/category/dizajn/dizajner-interfejsov/"),
-    ("Дизайн / Лэндинги", "/projects/category/dizajn/dizajn-lendingov/"),
-    ("Дизайн / Мобильные приложения", "/projects/category/dizajn/dizayn-interfeysov-prilojeniy/"),
-    ("Дизайн / UI/UX дизайн", "/projects/category/dizajn/ui-ux-dizajn/"),
-    ("Дизайн / Редизайн сайтов", "/projects/category/dizajn/redeziain-saitov/"),
-    ("Дизайн / Figma", "/projects/category/dizajn/figma/"),
-)
-
-
 def _text(node: object | None) -> str:
     if node is None or not hasattr(node, "get_text"):
         return ""
@@ -50,10 +36,22 @@ def _text(node: object | None) -> str:
 
 
 def parse_published_at(text: str, *, now: datetime | None = None) -> datetime | None:
-    match = re.search(r"(\d{1,2})\s+([а-яё]+),\s*(\d{1,2}):(\d{2})", text.casefold())
+    current = (now or datetime.now(UTC)).astimezone(MOSCOW_TZ)
+    normalized = " ".join(text.casefold().replace("ё", "е").split())
+    if "только что" in normalized:
+        return current.astimezone(UTC)
+    if "назад" in normalized:
+        hours_match = re.search(r"(\d+)\s+час", normalized)
+        minutes_match = re.search(r"(\d+)\s+минут", normalized)
+        if hours_match is not None or minutes_match is not None:
+            published = current - timedelta(
+                hours=int(hours_match.group(1)) if hours_match else 0,
+                minutes=int(minutes_match.group(1)) if minutes_match else 0,
+            )
+            return published.astimezone(UTC)
+    match = re.search(r"(\d{1,2})\s+([а-я]+),\s*(\d{1,2}):(\d{2})", normalized)
     if match is None or match.group(2) not in RUSSIAN_MONTHS:
         return None
-    current = (now or datetime.now(timezone.utc)).astimezone(MOSCOW_TZ)
     published = datetime(
         current.year,
         RUSSIAN_MONTHS[match.group(2)],
@@ -64,7 +62,7 @@ def parse_published_at(text: str, *, now: datetime | None = None) -> datetime | 
     )
     if published > current + timedelta(days=1):
         published = published.replace(year=published.year - 1)
-    return published.astimezone(timezone.utc)
+    return published.astimezone(UTC)
 
 
 def _card_published_at(card: object) -> datetime | None:
@@ -106,42 +104,35 @@ def parse_projects(html: str, category: str) -> list[Project]:
     return projects
 
 
+def _page_path(page: int) -> str:
+    path = "/projects/" if page == 1 else f"/projects/page-{page}/"
+    return f"{path}?kind=1"
+
+
 class FlSource:
     def __init__(self, session: aiohttp.ClientSession) -> None:
         self._session = session
 
-    async def _fetch_category(self, category: str, path: str) -> list[Project]:
-        url = urljoin(BASE_URL, path)
+    async def _fetch_page(self, page: int) -> list[Project]:
+        url = urljoin(BASE_URL, _page_path(page))
         async with self._session.get(url) as response:
             response.raise_for_status()
             html = await response.text()
-        projects = parse_projects(html, category)
-        LOGGER.info("FL.ru: %s — найдено %d карточек", category, len(projects))
+        projects = parse_projects(html, ALL_PROJECTS_CATEGORY)
+        LOGGER.info("FL.ru: общая лента, страница %d — найдено %d карточек", page, len(projects))
         return projects
 
     async def fetch(self) -> list[Project]:
-        batches = await asyncio.gather(
-            *(self._fetch_category(name, path) for name, path in FL_CATEGORIES),
-            return_exceptions=True,
-        )
         unique: dict[str, Project] = {}
-        for (category, _), batch in zip(FL_CATEGORIES, batches, strict=True):
-            if isinstance(batch, BaseException):
-                LOGGER.error("FL.ru: ошибка рубрики %s: %s", category, batch)
-                continue
-            for project in batch:
-                previous = unique.get(project.key)
-                if previous is None:
-                    unique[project.key] = project
-                elif project.category not in previous.category:
-                    unique[project.key] = Project(
-                        source=previous.source,
-                        external_id=previous.external_id,
-                        title=previous.title,
-                        description=previous.description,
-                        price=previous.price,
-                        url=previous.url,
-                        category=f"{previous.category}; {project.category}",
-                        published_at=previous.published_at,
-                    )
+        cutoff = datetime.now(UTC) - MAX_PROJECT_AGE
+        for page in range(1, MAX_PAGES + 1):
+            projects = await self._fetch_page(page)
+            if not projects:
+                break
+            for project in projects:
+                unique.setdefault(project.key, project)
+            dates = [project.published_at for project in projects if project.published_at is not None]
+            if dates and max(dates) < cutoff:
+                break
+        LOGGER.info("FL.ru: в общей ленте найдено %d уникальных карточек", len(unique))
         return list(unique.values())

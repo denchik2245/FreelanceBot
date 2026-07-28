@@ -80,6 +80,15 @@ class ProjectStore:
             )
             """
         )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_ai_rejections (
+                project_key TEXT PRIMARY KEY,
+                rejected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(project_key) REFERENCES project_catalog(project_key)
+            )
+            """
+        )
         columns = {
             str(row[1])
             for row in self._connection.execute("PRAGMA table_info(seen_projects)").fetchall()
@@ -194,7 +203,7 @@ class ProjectStore:
             INSERT INTO project_ai_assessments(
                 project_key, suitable, score, reason, response_text,
                 filter_model, response_model, analyzed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
             ON CONFLICT(project_key) DO UPDATE SET
                 suitable = excluded.suitable,
                 score = excluded.score,
@@ -202,7 +211,7 @@ class ProjectStore:
                 response_text = excluded.response_text,
                 filter_model = excluded.filter_model,
                 response_model = excluded.response_model,
-                analyzed_at = CURRENT_TIMESTAMP
+                analyzed_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
             """,
             (
                 assessment.project_key,
@@ -236,6 +245,16 @@ class ProjectStore:
             filter_model=str(row[4]),
             response_model=str(row[5]),
         )
+
+    def mark_ai_rejected(self, project_key: str) -> None:
+        self._connection.execute(
+            """
+            INSERT OR IGNORE INTO project_ai_rejections(project_key, rejected_at)
+            VALUES (?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+            """,
+            (project_key,),
+        )
+        self._connection.commit()
 
     def set_project_decision(self, project_key: str, decision: str) -> bool:
         if decision not in {"responded", "rejected"}:
@@ -402,6 +421,23 @@ class ProjectStore:
             ).fetchall()
             for source, count in rows:
                 result[str(source)][period] = int(count)
+        return result
+
+    def ai_rejected_statistics(self) -> dict[str, int]:
+        periods = {"day": "-1 day", "week": "-7 days", "month": "-30 days"}
+        result = {period: 0 for period in periods}
+        started_at = self.get_state("statistics_started_at") or "1970-01-01 00:00:00"
+        for period, modifier in periods.items():
+            row = self._connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM project_ai_rejections
+                WHERE rejected_at >= datetime('now', ?)
+                  AND rejected_at >= ?
+                """,
+                (modifier, started_at),
+            ).fetchone()
+            result[period] = int(row[0]) if row is not None else 0
         return result
 
     def statistics_started_at(self) -> datetime:

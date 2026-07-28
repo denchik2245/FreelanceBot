@@ -1,66 +1,65 @@
-from freelance_bot.sources.kwork import (
-    TARGET_CATEGORY_LABEL,
-    KworkSource,
-    resolve_target_category_id,
-)
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
+from freelance_bot.sources.kwork import KworkSource, build_category_labels
 
 
 class FakeClient:
     def __init__(self) -> None:
-        self.categories_ids: list[int | str] | None = None
+        self.calls: list[tuple[list[int | str], int]] = []
+        self.timestamp = int(datetime.now(UTC).timestamp())
+
+    async def get_categories(self) -> list[dict[str, object]]:
+        return [
+            {
+                "id": 15,
+                "name": "Дизайн",
+                "subcategories": [{"id": 24, "name": "Веб и мобильный дизайн"}],
+            }
+        ]
 
     async def get_projects(
         self, *, categories_ids: list[int | str], page: int
     ) -> list[dict[str, object]]:
-        self.categories_ids = categories_ids
-        assert page == 1
+        self.calls.append((categories_ids, page))
+        if page > 2:
+            return []
         return [
             {
-                "id": 123,
+                "id": 122 + page,
                 "category_id": 24,
                 "title": "Дизайн приложения",
                 "description": "Нарисовать интерфейс",
                 "price": 10_000,
-                "date_confirm": 1_784_298_445,
+                "date_confirm": self.timestamp,
             }
         ]
 
 
-async def test_fetch_uses_account_favorite_categories() -> None:
+async def test_fetch_uses_all_categories_and_multiple_pages() -> None:
     source = KworkSource.__new__(KworkSource)
     client = FakeClient()
     source._client = client
-    source._target_category_id = 24
+    source._category_labels = None
 
     projects = await source.fetch()
 
-    assert client.categories_ids == [24]
-    assert projects[0].category == TARGET_CATEGORY_LABEL
+    assert client.calls == [(["all"], 1), (["all"], 2), (["all"], 3)]
+    assert [project.external_id for project in projects] == ["123", "124"]
+    assert projects[0].category == "Веб и мобильный дизайн"
     assert projects[0].url == "https://kwork.ru/projects/123/view"
-    assert projects[0].published_at == datetime.fromtimestamp(1_784_298_445, timezone.utc)
+    assert projects[0].published_at == datetime.fromtimestamp(client.timestamp, UTC)
 
 
-def test_resolve_target_category_id() -> None:
+def test_build_category_labels() -> None:
     categories = [
         {
             "id": 15,
             "name": "Дизайн",
-            "subcategories": [
-                {"id": 25, "name": "Логотип и брендинг"},
-                {"id": 24, "name": "Веб и мобильный дизайн"},
-            ],
+            "subcategories": [{"id": 24, "name": "Веб и мобильный дизайн"}],
         }
     ]
-    assert resolve_target_category_id(categories) == 24
 
-
-async def test_fetch_rejects_wrong_category_from_api() -> None:
-    source = KworkSource.__new__(KworkSource)
-    client = FakeClient()
-    source._client = client
-    source._target_category_id = 999
-
-    projects = await source.fetch()
-
-    assert projects == []
+    assert build_category_labels(categories) == {
+        15: "Дизайн",
+        24: "Веб и мобильный дизайн",
+    }

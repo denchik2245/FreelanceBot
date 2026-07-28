@@ -2,6 +2,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from freelance_bot.main import _format_statistics
 from freelance_bot.models import AiAssessment, Project
 from freelance_bot.storage import ProjectStore
 
@@ -54,6 +55,31 @@ def test_store(tmp_path: Path) -> None:
     store.remember_ai_response(project.key, "Новый отклик", "GigaChat-2-Pro")
     assert store.get_ai_assessment(project.key) == assessment
     assert store.get_ai_response(project.key) == "Новый отклик"
+    rejected_project = Project(
+        "FL.ru",
+        "43",
+        "Логотип",
+        "Нарисовать логотип",
+        "",
+        "https://example.com/43",
+        "Дизайн",
+    )
+    store.remember_project(rejected_project)
+    store.remember_ai_assessment(
+        AiAssessment(
+            project_key=rejected_project.key,
+            suitable=False,
+            score=10,
+            reason="Не относится к веб-дизайну",
+            response_text="",
+            filter_model="GigaChat-2",
+            response_model="",
+        )
+    )
+    assert store.ai_rejected_statistics() == {"day": 0, "week": 0, "month": 0}
+    store.mark_ai_rejected(rejected_project.key)
+    assert store.ai_rejected_statistics() == {"day": 1, "week": 1, "month": 1}
+    assert "Отклонено AI — 1" in _format_statistics(store)
     assert store.set_project_decision(project.key, "responded")
     assert store.get_project_feedback(project.key) == ("responded", None)
     assert store.feedback_counts()["responded"] == 1

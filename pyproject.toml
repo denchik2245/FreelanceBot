@@ -1,7 +1,7 @@
 [project]
 name = "freelance-vk-bot"
 version = "0.1.0"
-description = "VK notifications for new Kwork and FL.ru projects in exact categories"
+description = "VK notifications for relevant Kwork and FL.ru projects from all categories"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.11,<4",

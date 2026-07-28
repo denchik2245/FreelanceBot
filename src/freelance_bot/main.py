@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from freelance_bot.ai import GigaChatProjectAdvisor
 from freelance_bot.config import Settings
+from freelance_bot.keywords import matches_project_keywords
 from freelance_bot.models import Project
 from freelance_bot.sources.fl import FlSource
 from freelance_bot.sources.kwork import KworkSource
@@ -49,6 +50,19 @@ LOGGER = logging.getLogger(__name__)
 MAX_PROJECT_AGE = timedelta(hours=24)
 
 
+def _keyword_candidates(source: str, projects: list[Project]) -> list[Project]:
+    if source not in {"Kwork", "FL.ru"}:
+        return projects
+    candidates = [project for project in projects if matches_project_keywords(project)]
+    LOGGER.info(
+        "%s: ключевой фильтр пропустил %d из %d проектов",
+        source,
+        len(candidates),
+        len(projects),
+    )
+    return candidates
+
+
 def _is_fresh(project: Project, *, now: datetime | None = None) -> bool:
     if project.published_at is None:
         return False
@@ -85,7 +99,7 @@ async def _fetch_sources(
         if isinstance(result, BaseException):
             LOGGER.error("Ошибка получения проектов %s: %s", name, result)
         else:
-            projects[name] = result
+            projects[name] = _keyword_candidates(name, result)
     return projects
 
 
@@ -150,6 +164,7 @@ async def _monitor_projects(
                         continue
                     assessment = None
                 if assessment is not None and not assessment.suitable:
+                    store.mark_ai_rejected(project.key)
                     store.mark_seen(project.key, project.source)
                     LOGGER.info(
                         "AI отфильтровал %s: %d/100 — %s",
@@ -185,6 +200,7 @@ def _latest_five(projects: list[Project]) -> list[Project]:
 
 def _format_statistics(store: ProjectStore) -> str:
     statistics = store.project_statistics()
+    ai_rejected = store.ai_rejected_statistics()
     started_at = store.statistics_started_at().astimezone(DISPLAY_TZ)
     labels = (("day", "За 24 часа"), ("week", "За 7 дней"), ("month", "За 30 дней"))
     lines = [
@@ -203,6 +219,7 @@ def _format_statistics(store: ProjectStore) -> str:
                 f"FL.ru — {fl}",
                 f"Profi.ru — {profi}",
                 f"Всего — {kwork + fl + profi}",
+                f"Отклонено AI — {ai_rejected[period]}",
             )
         )
     return "\n".join(lines)
@@ -489,10 +506,10 @@ async def _listen_for_commands(
                     recent_keyboard_json(),
                 )
                 return
-            latest = _latest_five(projects)
+            latest = _latest_five(_keyword_candidates(source_name, projects))
             if not latest:
                 await show_notice(
-                    f"В выбранных рубриках {source_name} проектов пока нет.",
+                    f"В общей ленте {source_name} совпадений по ключевым словам пока нет.",
                     recent_keyboard_json(),
                 )
                 return
