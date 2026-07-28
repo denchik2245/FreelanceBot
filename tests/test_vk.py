@@ -144,9 +144,9 @@ def test_recent_keyboard_requests_five_projects() -> None:
         for row in json.loads(recent_keyboard_json())["buttons"]
         for button in row
     ]
-    assert "Последние 5 Kwork" in labels
-    assert "Последние 5 FL.ru" in labels
-    assert "Последние 5 Profi.ru" in labels
+    assert "5 подходящих Kwork" in labels
+    assert "5 подходящих FL.ru" in labels
+    assert "5 подходящих Profi.ru" in labels
     assert not any("Последние 10" in label for label in labels)
 
 

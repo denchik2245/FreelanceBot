@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from freelance_bot.ai import GigaChatProjectAdvisor
 from freelance_bot.config import Settings
 from freelance_bot.keywords import matches_project_keywords
-from freelance_bot.models import Project
+from freelance_bot.models import AiAssessment, Project
 from freelance_bot.sources.fl import FlSource
 from freelance_bot.sources.kwork import KworkSource
 from freelance_bot.sources.profi import ProfiSource
@@ -196,6 +196,48 @@ def _latest_five(projects: list[Project]) -> list[Project]:
         return timestamp, numeric_id
 
     return sorted(projects, key=sort_key, reverse=True)[:5]
+
+
+async def _latest_suitable_projects(
+    projects: list[Project],
+    store: ProjectStore,
+    advisor: GigaChatProjectAdvisor,
+    *,
+    limit: int = 5,
+) -> list[tuple[Project, AiAssessment]]:
+    """Walk newest-first until enough successfully assessed suitable projects are found."""
+    selected: list[tuple[Project, AiAssessment]] = []
+    candidates = sorted(
+        projects,
+        key=lambda item: (
+            item.published_at.timestamp() if item.published_at else 0.0,
+            int(item.external_id) if item.external_id.isdigit() else 0,
+        ),
+        reverse=True,
+    )
+    for project in candidates:
+        store.remember_project(project)
+        assessment = store.get_ai_assessment(project.key)
+        if assessment is None:
+            try:
+                assessment = await advisor.assess(project)
+                store.remember_ai_assessment(assessment)
+            except Exception:
+                LOGGER.exception("Не удалось оценить проект ручной выдачи %s", project.key)
+                continue
+        if not assessment.suitable:
+            store.mark_ai_rejected(project.key)
+            LOGGER.info(
+                "AI отфильтровал проект ручной выдачи %s: %d/100 — %s",
+                project.key,
+                assessment.score,
+                assessment.reason,
+            )
+            continue
+        selected.append((project, assessment))
+        if len(selected) == limit:
+            break
+    return selected
 
 
 def _format_statistics(store: ProjectStore) -> str:
@@ -491,7 +533,7 @@ async def _listen_for_commands(
             try:
                 if command == COMMAND_KWORK:
                     async with kwork_lock:
-                        projects = await kwork_source.fetch()
+                        projects = await kwork_source.fetch_for_manual_selection()
                 elif command == COMMAND_FL:
                     async with fl_lock:
                         projects = await fl_source.fetch()
@@ -506,24 +548,33 @@ async def _listen_for_commands(
                     recent_keyboard_json(),
                 )
                 return
-            latest = _latest_five(_keyword_candidates(source_name, projects))
-            if not latest:
+            candidates = _keyword_candidates(source_name, projects)
+            if not candidates:
                 await show_notice(
                     f"В общей ленте {source_name} совпадений по ключевым словам пока нет.",
                     recent_keyboard_json(),
                 )
                 return
+            if advisor is None:
+                await show_notice(
+                    "⚠️ GigaChat отключён, поэтому выбрать подходящие проекты нельзя.",
+                    recent_keyboard_json(),
+                )
+                return
             await bot.hide_ui()
-            for project in reversed(latest):
-                store.remember_project(project)
+            selected = await _latest_suitable_projects(
+                candidates,
+                store,
+                advisor,
+            )
+            if not selected:
+                await show_notice(
+                    f"Среди последних проектов {source_name} AI не нашёл подходящих.",
+                    recent_keyboard_json(),
+                )
+                return
+            for project, assessment in reversed(selected):
                 feedback = store.get_project_feedback(project.key)
-                assessment = store.get_ai_assessment(project.key)
-                if advisor is not None and assessment is None:
-                    try:
-                        assessment = await advisor.assess(project)
-                        store.remember_ai_assessment(assessment)
-                    except Exception:
-                        LOGGER.exception("Не удалось оценить проект ручной выдачи %s", project.key)
                 await bot.send(
                     project,
                     test_view=True,

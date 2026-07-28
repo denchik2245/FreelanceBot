@@ -50,6 +50,18 @@ async def test_fetch_uses_all_categories_and_multiple_pages() -> None:
     assert projects[0].published_at == datetime.fromtimestamp(client.timestamp, UTC)
 
 
+async def test_manual_fetch_uses_targeted_categories_without_age_cutoff() -> None:
+    source = KworkSource.__new__(KworkSource)
+    client = FakeClient()
+    source._client = client
+    source._category_labels = None
+
+    projects = await source.fetch_for_manual_selection()
+
+    assert client.calls == [([24, 37], 1), ([24, 37], 2), ([24, 37], 3)]
+    assert [project.external_id for project in projects] == ["123", "124"]
+
+
 def test_build_category_labels() -> None:
     categories = [
         {

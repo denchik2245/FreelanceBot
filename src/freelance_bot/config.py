@@ -69,7 +69,7 @@ class Settings:
             send_existing_on_first_run=_bool("SEND_EXISTING_ON_FIRST_RUN"),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             ai_enabled=ai_enabled,
-            ai_fail_open=_bool("AI_FAIL_OPEN", True),
+            ai_fail_open=_bool("AI_FAIL_OPEN", False),
             ai_min_score=ai_min_score,
             ai_profile_path=Path(os.getenv("AI_PROFILE_PATH", "config/freelancer_profile.txt")),
             ai_filter_prompt_path=Path(
@@ -82,6 +82,8 @@ class Settings:
             gigachat_scope=os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS").strip(),
             gigachat_base_url=os.getenv("GIGACHAT_BASE_URL", "https://api.giga.chat/v1").strip(),
             gigachat_ca_bundle_file=Path(ca_bundle) if ca_bundle else None,
-            gigachat_filter_model=os.getenv("GIGACHAT_FILTER_MODEL", "GigaChat-2").strip(),
+            gigachat_filter_model=os.getenv(
+                "GIGACHAT_FILTER_MODEL", "GigaChat-2-Pro"
+            ).strip(),
             gigachat_response_model=os.getenv("GIGACHAT_RESPONSE_MODEL", "GigaChat-2-Pro").strip(),
         )

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from freelance_bot.ai import GigaChatProjectAdvisor, _parse_filter_result
+from freelance_bot.ai import GigaChatProjectAdvisor, _parse_filter_result, _project_context
 from freelance_bot.models import Project
 
 
@@ -63,6 +63,25 @@ def test_parse_filter_result_accepts_json_code_block() -> None:
     )
 
 
+def test_project_context_converts_description_html_to_plain_text() -> None:
+    project = _project()
+    project = Project(
+        source=project.source,
+        external_id=project.external_id,
+        title=project.title,
+        description="Нужен <b>макет</b><br>в Figma &amp; Tilda",
+        price=project.price,
+        url=project.url,
+        category=project.category,
+        published_at=project.published_at,
+    )
+
+    context = _project_context(project)
+
+    assert "Описание: Нужен макет в Figma & Tilda" in context
+    assert "<b>" not in context
+
+
 @pytest.mark.asyncio
 async def test_advisor_only_assesses_suitable_project() -> None:
     advisor, filter_client, response_client = _advisor(85)
@@ -73,6 +92,7 @@ async def test_advisor_only_assesses_suitable_project() -> None:
     assert assessment.response_model == ""
     assert assessment.response_text == ""
     assert len(filter_client.requests) == 1
+    assert getattr(filter_client.requests[0], "response_format") is not None
     assert response_client.requests == []
 
 
@@ -117,3 +137,22 @@ async def test_advisor_retries_invalid_gigachat_response(monkeypatch: pytest.Mon
 
     assert assessment.score == 85
     assert len(filter_client.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_advisor_falls_back_to_response_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    advisor, filter_client, response_client = _advisor(85)
+    filter_client.responses = [RuntimeError("empty response")] * 3
+    response_client.responses = ['{"score": 15, "reason": "Только программирование"}']
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr("freelance_bot.ai.asyncio.sleep", no_sleep)
+    assessment = await advisor.assess(_project())
+
+    assert not assessment.suitable
+    assert assessment.score == 15
+    assert assessment.filter_model == "GigaChat-2-Pro"
+    assert len(filter_client.requests) == 3
+    assert len(response_client.requests) == 1

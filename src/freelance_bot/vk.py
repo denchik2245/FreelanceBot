@@ -150,10 +150,10 @@ def recent_keyboard_json() -> str:
             "inline": False,
             "buttons": [
                 [
-                    button("Последние 5 Kwork", COMMAND_KWORK),
-                    button("Последние 5 FL.ru", COMMAND_FL),
+                    button("5 подходящих Kwork", COMMAND_KWORK),
+                    button("5 подходящих FL.ru", COMMAND_FL),
                 ],
-                [button("Последние 5 Profi.ru", COMMAND_PROFI)],
+                [button("5 подходящих Profi.ru", COMMAND_PROFI)],
                 [button("← Главное меню", COMMAND_MENU)],
             ],
         },

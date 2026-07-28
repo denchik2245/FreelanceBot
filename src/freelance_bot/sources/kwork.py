@@ -8,6 +8,8 @@ LOGGER = logging.getLogger(__name__)
 ALL_CATEGORIES_LABEL = "Все категории"
 MAX_PAGES = 10
 MAX_PROJECT_AGE = timedelta(hours=24)
+MANUAL_CATEGORY_IDS = [24, 37]  # Веб и мобильный дизайн; Создание сайта
+MANUAL_MAX_PAGES = 10
 
 
 def _plain(value: Any) -> Any:
@@ -62,12 +64,29 @@ class KworkSource:
             LOGGER.info("Kwork: загружено %d категорий", len(self._category_labels))
         return self._category_labels
 
-    async def fetch(self) -> list[Project]:
+    async def _fetch_projects(
+        self,
+        *,
+        categories_ids: list[int | str],
+        max_pages: int,
+        cutoff: datetime | None,
+        feed_label: str,
+    ) -> list[Project]:
         category_labels = await self._get_category_labels()
         unique: dict[str, Project] = {}
-        cutoff = datetime.now(UTC) - MAX_PROJECT_AGE
-        for page in range(1, MAX_PAGES + 1):
-            raw_projects = await self._client.get_projects(categories_ids=["all"], page=page)
+        for page in range(1, max_pages + 1):
+            try:
+                raw_projects = await self._client.get_projects(
+                    categories_ids=categories_ids,
+                    page=page,
+                )
+            except KeyError:
+                # Some Kwork API responses omit `response` after the last page.
+                # Keep already collected projects, but do not mask a first-page failure.
+                if not unique:
+                    raise
+                LOGGER.info("Kwork: %s закончилась на странице %d", feed_label, page)
+                break
             if not raw_projects:
                 break
             page_projects: list[Project] = []
@@ -98,12 +117,34 @@ class KworkSource:
                 )
                 page_projects.append(project)
                 unique.setdefault(project.key, project)
-            LOGGER.info("Kwork: общая лента, страница %d — найдено %d карточек", page, len(page_projects))
+            LOGGER.info(
+                "Kwork: %s, страница %d — найдено %d карточек",
+                feed_label,
+                page,
+                len(page_projects),
+            )
             dates = [project.published_at for project in page_projects if project.published_at]
-            if dates and max(dates) < cutoff:
+            if cutoff is not None and dates and max(dates) < cutoff:
                 break
-        LOGGER.info("Kwork: в общей ленте найдено %d уникальных карточек", len(unique))
+        LOGGER.info("Kwork: %s — найдено %d уникальных карточек", feed_label, len(unique))
         return list(unique.values())
+
+    async def fetch(self) -> list[Project]:
+        return await self._fetch_projects(
+            categories_ids=["all"],
+            max_pages=MAX_PAGES,
+            cutoff=datetime.now(UTC) - MAX_PROJECT_AGE,
+            feed_label="общая лента",
+        )
+
+    async def fetch_for_manual_selection(self) -> list[Project]:
+        """Fetch the deeper targeted feed used to assemble five suitable projects."""
+        return await self._fetch_projects(
+            categories_ids=MANUAL_CATEGORY_IDS,
+            max_pages=MANUAL_MAX_PAGES,
+            cutoff=None,
+            feed_label="целевая выдача веб-дизайна и создания сайтов",
+        )
 
     async def close(self) -> None:
         await self._client.close()

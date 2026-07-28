@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -10,7 +12,7 @@ from types import TracebackType
 from typing import Any, Self, TypeVar
 
 from gigachat import GigaChat
-from gigachat.models import Chat, Messages, MessagesRole
+from gigachat.models import Chat, JsonSchemaResponseFormat, Messages, MessagesRole
 
 from freelance_bot.models import AiAssessment, Project
 
@@ -18,6 +20,18 @@ LOGGER = logging.getLogger(__name__)
 MAX_PROJECT_TEXT_LENGTH = 6_000
 RETRY_ATTEMPTS = 3
 T = TypeVar("T")
+FILTER_RESPONSE_FORMAT = JsonSchemaResponseFormat(
+    schema={
+        "type": "object",
+        "properties": {
+            "score": {"type": "integer", "minimum": 0, "maximum": 100},
+            "reason": {"type": "string", "minLength": 1},
+        },
+        "required": ["score", "reason"],
+        "additionalProperties": False,
+    },
+    strict=True,
+)
 
 
 async def _with_retry(operation: Callable[[], Awaitable[T]], label: str) -> T:
@@ -85,7 +99,10 @@ def _parse_filter_result(text: str) -> tuple[int, str]:
 
 
 def _project_context(project: Project) -> str:
-    description = project.description[:MAX_PROJECT_TEXT_LENGTH]
+    # Kwork returns HTML fragments in descriptions. Tags and entities make the
+    # project harder for the model to read and waste the limited input budget.
+    description = re.sub(r"<[^>]+>", " ", project.description)
+    description = " ".join(html.unescape(description).split())[:MAX_PROJECT_TEXT_LENGTH]
     return "\n".join(
         (
             f"Площадка: {project.source}",
@@ -188,7 +205,8 @@ class GigaChatProjectAdvisor:
     async def assess(self, project: Project) -> AiAssessment:
         filter_request = Chat(
             temperature=0.1,
-            max_tokens=250,
+            max_tokens=400,
+            response_format=FILTER_RESPONSE_FORMAT,
             messages=[
                 Messages(
                     role=MessagesRole.SYSTEM,
@@ -198,11 +216,30 @@ class GigaChatProjectAdvisor:
             ],
         )
 
-        async def request_filter() -> tuple[int, str]:
-            response = await self._filter_client.achat(filter_request)
+        async def request_filter(client: GigaChat) -> tuple[int, str]:
+            response = await client.achat(filter_request)
             return _parse_filter_result(_response_text(response))
 
-        score, reason = await _with_retry(request_filter, f"AI-оценка {project.key}")
+        used_model = self._filter_model
+        try:
+            score, reason = await _with_retry(
+                lambda: request_filter(self._filter_client),
+                f"AI-оценка {project.key}",
+            )
+        except Exception:
+            if self._response_model == self._filter_model:
+                raise
+            LOGGER.warning(
+                "Основная AI-модель не оценила %s; пробую резервную %s",
+                project.key,
+                self._response_model,
+                exc_info=True,
+            )
+            score, reason = await _with_retry(
+                lambda: request_filter(self._response_client),
+                f"резервная AI-оценка {project.key}",
+            )
+            used_model = self._response_model
         suitable = score >= self._min_score
         assessment = AiAssessment(
             project_key=project.key,
@@ -210,7 +247,7 @@ class GigaChatProjectAdvisor:
             score=score,
             reason=reason,
             response_text="",
-            filter_model=self._filter_model,
+            filter_model=used_model,
             response_model="",
         )
         LOGGER.info(
