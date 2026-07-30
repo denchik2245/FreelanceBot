@@ -55,9 +55,7 @@ class Settings:
         if ai_enabled and not gigachat_credentials:
             raise ValueError("AI_ENABLED=true, но не задан обязательный GIGACHAT_CREDENTIALS")
         gigachat_filter_model = os.getenv("GIGACHAT_FILTER_MODEL", "GigaChat-2").strip()
-        gigachat_response_model = os.getenv(
-            "GIGACHAT_RESPONSE_MODEL", "GigaChat-2-Pro"
-        ).strip()
+        gigachat_response_model = os.getenv("GIGACHAT_RESPONSE_MODEL", "GigaChat-2-Max").strip()
         if ai_enabled and (not gigachat_filter_model or not gigachat_response_model):
             raise ValueError("AI-модели GigaChat не могут быть пустыми")
         ca_bundle = os.getenv("GIGACHAT_CA_BUNDLE_FILE", "").strip()

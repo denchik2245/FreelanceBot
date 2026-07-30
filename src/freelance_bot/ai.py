@@ -25,8 +25,9 @@ FILTER_RESPONSE_FORMAT = JsonSchemaResponseFormat(
         "properties": {
             "score": {"type": "integer", "minimum": 0, "maximum": 100},
             "reason": {"type": "string", "minLength": 1},
+            "summary": {"type": "string", "minLength": 1},
         },
-        "required": ["score", "reason"],
+        "required": ["score", "reason", "summary"],
         "additionalProperties": False,
     },
     strict=True,
@@ -74,7 +75,7 @@ def _response_text(response: Any) -> str:
     raise RuntimeError("GigaChat вернул ответ без текста")
 
 
-def _parse_filter_result(text: str) -> tuple[int, str]:
+def _parse_filter_result(text: str) -> tuple[int, str, str]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
@@ -90,11 +91,14 @@ def _parse_filter_result(text: str) -> tuple[int, str]:
     payload = json.loads(cleaned[start : end + 1])
     score = int(payload["score"])
     reason = " ".join(str(payload["reason"]).split())
+    summary = " ".join(str(payload["summary"]).split())
     if not 0 <= score <= 100:
         raise ValueError("Оценка GigaChat должна быть от 0 до 100")
     if not reason:
         raise ValueError("GigaChat не объяснил оценку проекта")
-    return score, reason
+    if not summary:
+        raise ValueError("GigaChat не описал задачу клиента")
+    return score, reason, summary
 
 
 def _project_context(project: Project) -> str:
@@ -205,7 +209,7 @@ class GigaChatProjectAdvisor:
         filter_request = Chat(
             model=self._filter_model,
             temperature=0.1,
-            max_tokens=400,
+            max_tokens=500,
             response_format=FILTER_RESPONSE_FORMAT,
             messages=[
                 Messages(
@@ -216,17 +220,19 @@ class GigaChatProjectAdvisor:
             ],
         )
 
-        async def request_filter(client: GigaChat, requested_model: str) -> tuple[int, str, str]:
+        async def request_filter(
+            client: GigaChat, requested_model: str
+        ) -> tuple[int, str, str, str]:
             # Keep the model in the payload as well as in the client settings so
             # SDK defaults can never silently route the request to another tier.
             request = filter_request.model_copy(update={"model": requested_model}, deep=True)
             response = await client.achat(request)
-            score, reason = _parse_filter_result(_response_text(response))
+            score, reason, summary = _parse_filter_result(_response_text(response))
             actual_model = str(getattr(response, "model", "") or requested_model)
-            return score, reason, actual_model
+            return score, reason, summary, actual_model
 
         try:
-            score, reason, used_model = await _with_retry(
+            score, reason, summary, used_model = await _with_retry(
                 lambda: request_filter(self._filter_client, self._filter_model),
                 f"AI-оценка {project.key}",
             )
@@ -240,7 +246,7 @@ class GigaChatProjectAdvisor:
                 self._response_model,
                 exc_info=True,
             )
-            score, reason, used_model = await _with_retry(
+            score, reason, summary, used_model = await _with_retry(
                 lambda: request_filter(self._response_client, self._response_model),
                 f"резервная AI-оценка {project.key}",
             )
@@ -253,6 +259,7 @@ class GigaChatProjectAdvisor:
             response_text="",
             filter_model=used_model,
             response_model="",
+            summary=summary,
         )
         LOGGER.info(
             "AI-оценка %s моделью %s: %d/100, подходит=%s — %s",

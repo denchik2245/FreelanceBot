@@ -27,3 +27,4 @@ class AiAssessment:
     response_text: str
     filter_model: str
     response_model: str
+    summary: str = ""

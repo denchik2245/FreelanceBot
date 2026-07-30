@@ -154,7 +154,7 @@ async def _monitor_projects(
                     store.remember_project(project)
                     if advisor is not None:
                         assessment = store.get_ai_assessment(project.key)
-                        if assessment is None:
+                        if assessment is None or not assessment.summary:
                             assessment = await advisor.assess(project)
                             store.remember_ai_assessment(assessment)
                 except Exception:
@@ -217,7 +217,7 @@ async def _latest_suitable_projects(
     for project in candidates:
         store.remember_project(project)
         assessment = store.get_ai_assessment(project.key)
-        if assessment is None:
+        if assessment is None or not assessment.summary:
             try:
                 assessment = await advisor.assess(project)
                 store.remember_ai_assessment(assessment)
@@ -245,7 +245,7 @@ def _format_statistics(store: ProjectStore) -> str:
     started_at = store.statistics_started_at().astimezone(DISPLAY_TZ)
     labels = (("day", "За 24 часа"), ("week", "За 7 дней"), ("month", "За 30 дней"))
     lines = [
-        "📊 Статистика новых проектов",
+        "📊 Статистика подходящих проектов",
         f"Отсчёт с {started_at:%d.%m.%Y %H:%M}",
     ]
     for period, label in labels:
@@ -259,7 +259,7 @@ def _format_statistics(store: ProjectStore) -> str:
                 f"Kwork.ru — {kwork}",
                 f"FL.ru — {fl}",
                 f"Profi.ru — {profi}",
-                f"Всего — {kwork + fl + profi}",
+                f"Всего подходящих — {kwork + fl + profi}",
                 f"Отклонено AI — {ai_rejected[period]}",
             )
         )

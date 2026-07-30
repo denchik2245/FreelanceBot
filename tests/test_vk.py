@@ -127,13 +127,15 @@ def test_project_message_includes_ai_assessment_but_not_response() -> None:
         reason="Задача соответствует профилю",
         response_text="Здравствуйте! Готов обсудить дизайн макета.",
         filter_model="GigaChat-2",
-        response_model="GigaChat-2-Pro",
+        response_model="GigaChat-2-Max",
+        summary="Клиенту нужен дизайн лендинга в Figma с мобильной версией.",
     )
 
     message = format_message(project, assessment=assessment)
 
-    assert "🤖 Оценка: 91/100" in message
-    assert "Почему: Задача соответствует профилю" in message
+    assert "🤖 Кратко: Клиенту нужен дизайн лендинга в Figma" in message
+    assert "Оценка:" not in message
+    assert "Почему:" not in message
     assert "Готовый отклик" not in message
     assert assessment.response_text not in message
 
@@ -160,7 +162,8 @@ async def test_project_does_not_send_ready_response_automatically() -> None:
         reason="Подходит",
         response_text="Готовый текст отклика",
         filter_model="GigaChat-2",
-        response_model="GigaChat-2-Pro",
+        response_model="GigaChat-2-Max",
+        summary="Нужен макет сайта.",
     )
     bot = object.__new__(VkBot)
     calls: list[tuple[str, str | bool]] = []

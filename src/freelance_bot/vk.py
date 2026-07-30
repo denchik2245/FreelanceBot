@@ -97,13 +97,9 @@ def format_message(
         lines.append(f"🕒 {published.astimezone(DISPLAY_TZ):%d.%m.%Y %H:%M}")
     lines.extend(("", project.url))
     if assessment is not None:
-        lines.extend(
-            (
-                "",
-                f"🤖 Оценка: {assessment.score}/100",
-                f"Почему: {_clip(assessment.reason, 500)}",
-            )
-        )
+        summary = assessment.summary or project.title
+        if summary:
+            lines.extend(("", f"🤖 Кратко: {_clip(summary, 500)}"))
     return "\n".join(lines)
 
 
@@ -570,6 +566,7 @@ class VkBot:
             "⏳ Загружаю последние проекты ",
             "📨 Отклики\n",
             "📊 Статистика новых проектов",
+            "📊 Статистика подходящих проектов",
         )
         message_ids = [
             int(item["id"])

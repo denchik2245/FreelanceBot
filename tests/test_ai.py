@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -44,10 +45,11 @@ def _project() -> Project:
 def _advisor(score: int) -> tuple[GigaChatProjectAdvisor, FakeClient, FakeClient]:
     filter_client = FakeClient(
         "GigaChat-2",
-        f'```json\n{{"score": {score}, "reason": "Подходит"}}\n```',
+        f'```json\n{{"score": {score}, "reason": "Подходит", '
+        '"summary": "Клиенту нужен макет лендинга в Figma."}\n```',
     )
     response_client = FakeClient(
-        "GigaChat-2-Pro",
+        "GigaChat-2-Max",
         "Здравствуйте! Готов обсудить задачу и детали макета.",
         "Добрый день! Предлагаю начать с логики главной страницы.",
     )
@@ -55,7 +57,7 @@ def _advisor(score: int) -> tuple[GigaChatProjectAdvisor, FakeClient, FakeClient
     advisor._filter_client = filter_client
     advisor._response_client = response_client
     advisor._filter_model = "GigaChat-2"
-    advisor._response_model = "GigaChat-2-Pro"
+    advisor._response_model = "GigaChat-2-Max"
     advisor._min_score = 70
     advisor._profile = "Веб-дизайнер, работаю в Figma."
     advisor._filter_prompt = "Оцени проект и верни JSON."
@@ -65,9 +67,13 @@ def _advisor(score: int) -> tuple[GigaChatProjectAdvisor, FakeClient, FakeClient
 
 
 def test_parse_filter_result_accepts_json_code_block() -> None:
-    assert _parse_filter_result('```json\n{"score": 81, "reason": " Нужен UI "}\n```') == (
+    assert _parse_filter_result(
+        '```json\n{"score": 81, "reason": " Нужен UI ", '
+        '"summary": " Нужен интерфейс сервиса "}\n```'
+    ) == (
         81,
         "Нужен UI",
+        "Нужен интерфейс сервиса",
     )
 
 
@@ -97,6 +103,7 @@ async def test_advisor_only_assesses_suitable_project() -> None:
 
     assert assessment.suitable
     assert assessment.score == 85
+    assert assessment.summary == "Клиенту нужен макет лендинга в Figma."
     assert assessment.response_model == ""
     assert assessment.response_text == ""
     assert assessment.filter_model == "GigaChat-2"
@@ -126,7 +133,7 @@ async def test_advisor_generates_response_on_demand() -> None:
     assert "Готов обсудить" in response_text
     assert filter_client.requests == []
     assert len(response_client.requests) == 1
-    assert response_client.requests[0].model == "GigaChat-2-Pro"
+    assert response_client.requests[0].model == "GigaChat-2-Max"
 
     regenerated = await advisor.generate_response(_project(), previous_response=response_text)
     assert regenerated != response_text
@@ -158,7 +165,12 @@ async def test_advisor_falls_back_to_response_model(
 ) -> None:
     advisor, filter_client, response_client = _advisor(85)
     filter_client.responses = [RuntimeError("empty response")] * 3
-    response_client.responses = ['{"score": 15, "reason": "Только программирование"}']
+    response_client.responses = [
+        (
+            '{"score": 15, "reason": "Только программирование", '
+            '"summary": "Клиенту нужна техническая доработка сайта."}'
+        )
+    ]
 
     async def no_sleep(_: float) -> None:
         return None
@@ -168,8 +180,16 @@ async def test_advisor_falls_back_to_response_model(
 
     assert not assessment.suitable
     assert assessment.score == 15
-    assert assessment.filter_model == "GigaChat-2-Pro"
+    assert assessment.filter_model == "GigaChat-2-Max"
     assert len(filter_client.requests) == 3
     assert all(request.model == "GigaChat-2" for request in filter_client.requests)
     assert len(response_client.requests) == 1
-    assert response_client.requests[0].model == "GigaChat-2-Pro"
+    assert response_client.requests[0].model == "GigaChat-2-Max"
+
+
+def test_response_prompt_requires_three_case_links_and_no_mobile_adaptation_question() -> None:
+    prompt = Path("config/prompts/response_writer.txt").read_text(encoding="utf-8")
+
+    assert "ровно 3 прямые ссылки" in prompt
+    assert "3 последних проекта" in prompt
+    assert "Не спрашивай, нужна ли адаптация под мобильные устройства" in prompt

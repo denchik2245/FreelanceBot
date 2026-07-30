@@ -61,6 +61,7 @@ class ProjectStore:
                 suitable INTEGER NOT NULL CHECK(suitable IN (0, 1)),
                 score INTEGER NOT NULL CHECK(score BETWEEN 0 AND 100),
                 reason TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
                 response_text TEXT NOT NULL,
                 filter_model TEXT NOT NULL,
                 response_model TEXT NOT NULL,
@@ -80,6 +81,16 @@ class ProjectStore:
             )
             """
         )
+        assessment_columns = {
+            str(row[1])
+            for row in self._connection.execute(
+                "PRAGMA table_info(project_ai_assessments)"
+            ).fetchall()
+        }
+        if "summary" not in assessment_columns:
+            self._connection.execute(
+                "ALTER TABLE project_ai_assessments ADD COLUMN summary TEXT NOT NULL DEFAULT ''"
+            )
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS project_ai_rejections (
@@ -201,13 +212,14 @@ class ProjectStore:
         self._connection.execute(
             """
             INSERT INTO project_ai_assessments(
-                project_key, suitable, score, reason, response_text,
+                project_key, suitable, score, reason, summary, response_text,
                 filter_model, response_model, analyzed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
             ON CONFLICT(project_key) DO UPDATE SET
                 suitable = excluded.suitable,
                 score = excluded.score,
                 reason = excluded.reason,
+                summary = excluded.summary,
                 response_text = excluded.response_text,
                 filter_model = excluded.filter_model,
                 response_model = excluded.response_model,
@@ -218,6 +230,7 @@ class ProjectStore:
                 int(assessment.suitable),
                 assessment.score,
                 assessment.reason,
+                assessment.summary,
                 assessment.response_text,
                 assessment.filter_model,
                 assessment.response_model,
@@ -228,7 +241,7 @@ class ProjectStore:
     def get_ai_assessment(self, project_key: str) -> AiAssessment | None:
         row = self._connection.execute(
             """
-            SELECT suitable, score, reason, response_text, filter_model, response_model
+            SELECT suitable, score, reason, summary, response_text, filter_model, response_model
             FROM project_ai_assessments
             WHERE project_key = ?
             """,
@@ -241,9 +254,10 @@ class ProjectStore:
             suitable=bool(row[0]),
             score=int(row[1]),
             reason=str(row[2]),
-            response_text=str(row[3]),
-            filter_model=str(row[4]),
-            response_model=str(row[5]),
+            summary=str(row[3]),
+            response_text=str(row[4]),
+            filter_model=str(row[5]),
+            response_model=str(row[6]),
         )
 
     def mark_ai_rejected(self, project_key: str) -> None:
@@ -410,12 +424,14 @@ class ProjectStore:
         for period, modifier in periods.items():
             rows = self._connection.execute(
                 """
-                SELECT source, COUNT(*)
-                FROM seen_projects
-                WHERE first_seen_at >= datetime('now', ?)
-                  AND first_seen_at >= ?
-                  AND source IN ('Kwork', 'FL.ru', 'Profi.ru')
-                GROUP BY source
+                SELECT catalog.source, COUNT(*)
+                FROM project_ai_assessments AS assessment
+                JOIN project_catalog AS catalog USING(project_key)
+                WHERE assessment.suitable = 1
+                  AND assessment.analyzed_at >= datetime('now', ?)
+                  AND assessment.analyzed_at >= ?
+                  AND catalog.source IN ('Kwork', 'FL.ru', 'Profi.ru')
+                GROUP BY catalog.source
                 """,
                 (modifier, started_at),
             ).fetchall()

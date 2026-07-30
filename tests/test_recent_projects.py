@@ -56,6 +56,7 @@ async def test_latest_suitable_projects_scans_past_rejected_projects(tmp_path) -
                 response_text="",
                 filter_model="GigaChat-2-Pro",
                 response_model="",
+                summary=f"Кратко о проекте {project.external_id}",
             )
 
     store = ProjectStore(tmp_path / "projects.sqlite3")

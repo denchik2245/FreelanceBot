@@ -34,23 +34,23 @@
 
 РЕАЛИЗОВАННЫЕ МНОГОСТРАНИЧНЫЕ САЙТЫ НЕ НА TILDA
 
-- https://navadkovscom.ru/
-- https://normdev.ru/
-- https://alts-ural.ru/
-- https://vn-metallgrupp.ru/
-- https://urkov-seo.ru/
+- многостраничный сайт центра творчества: https://navadkovscom.ru/
+- многостраничный сайт студии разработки: https://normdev.ru/
+- многостраничный сайт по обслуживанию железных дорог: https://alts-ural.ru/
+- многостраничный сайт приёма металлолома: https://vn-metallgrupp.ru/
+- лендинг СЕО продвижения: https://urkov-seo.ru/
 
 РЕАЛИЗОВАННЫЕ ИНТЕРНЕТ-МАГАЗИНЫ
 
-- https://parquetdeco.ru/
-- https://ashaindia.ru/
-- https://snk-stroy.ru/
+- магазин напольных покрытий: https://parquetdeco.ru/
+- магазин индийских товаров: https://ashaindia.ru/
+- производство каркасных домов: https://snk-stroy.ru/
 
 РЕАЛИЗОВАННЫЕ ЛЕНДИНГИ НА TILDA
 
-- https://traktorfan.tilda.ws/
-- https://tld-zakulab.ru/redcross
-- https://tld-zakulab.ru/flabellum
+- лендинг хоккейного мероприятия: https://traktorfan.tilda.ws/
+- лендинг курсов первой помощи: https://tld-zakulab.ru/redcross
+- лендинг жилого комплекса: https://tld-zakulab.ru/flabellum
 
 МАКЕТЫ В FIGMA
 
