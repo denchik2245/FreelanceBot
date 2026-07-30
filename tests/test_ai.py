@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -7,12 +7,16 @@ from freelance_bot.ai import GigaChatProjectAdvisor, _parse_filter_result, _proj
 from freelance_bot.models import Project
 
 
-def _response(text: str) -> SimpleNamespace:
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+def _response(text: str, model: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
+        model=model,
+    )
 
 
 class FakeClient:
-    def __init__(self, *responses: str | Exception) -> None:
+    def __init__(self, model: str, *responses: str | Exception) -> None:
+        self.model = model
         self.responses = list(responses)
         self.requests: list[object] = []
 
@@ -21,7 +25,7 @@ class FakeClient:
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
-        return _response(response)
+        return _response(response, self.model)
 
 
 def _project() -> Project:
@@ -33,13 +37,17 @@ def _project() -> Project:
         price="до 50 000 ₽",
         url="https://example.com/42",
         category="Дизайн",
-        published_at=datetime(2026, 7, 27, tzinfo=timezone.utc),
+        published_at=datetime(2026, 7, 27, tzinfo=UTC),
     )
 
 
 def _advisor(score: int) -> tuple[GigaChatProjectAdvisor, FakeClient, FakeClient]:
-    filter_client = FakeClient(f'```json\n{{"score": {score}, "reason": "Подходит"}}\n```')
+    filter_client = FakeClient(
+        "GigaChat-2",
+        f'```json\n{{"score": {score}, "reason": "Подходит"}}\n```',
+    )
     response_client = FakeClient(
+        "GigaChat-2-Pro",
         "Здравствуйте! Готов обсудить задачу и детали макета.",
         "Добрый день! Предлагаю начать с логики главной страницы.",
     )
@@ -91,35 +99,40 @@ async def test_advisor_only_assesses_suitable_project() -> None:
     assert assessment.score == 85
     assert assessment.response_model == ""
     assert assessment.response_text == ""
+    assert assessment.filter_model == "GigaChat-2"
     assert len(filter_client.requests) == 1
-    assert getattr(filter_client.requests[0], "response_format") is not None
+    assert filter_client.requests[0].response_format is not None
+    assert filter_client.requests[0].model == "GigaChat-2"
     assert response_client.requests == []
 
 
 @pytest.mark.asyncio
 async def test_advisor_skips_response_for_unsuitable_project() -> None:
-    advisor, _, response_client = _advisor(25)
+    advisor, filter_client, response_client = _advisor(25)
     assessment = await advisor.assess(_project())
 
     assert not assessment.suitable
     assert assessment.response_text == ""
     assert assessment.response_model == ""
+    assert len(filter_client.requests) == 1
     assert response_client.requests == []
 
 
 @pytest.mark.asyncio
 async def test_advisor_generates_response_on_demand() -> None:
-    advisor, _, response_client = _advisor(25)
+    advisor, filter_client, response_client = _advisor(25)
     response_text = await advisor.generate_response(_project())
 
     assert "Готов обсудить" in response_text
+    assert filter_client.requests == []
     assert len(response_client.requests) == 1
+    assert response_client.requests[0].model == "GigaChat-2-Pro"
 
     regenerated = await advisor.generate_response(_project(), previous_response=response_text)
     assert regenerated != response_text
     assert "Предлагаю начать" in regenerated
     assert len(response_client.requests) == 2
-    second_messages = getattr(response_client.requests[1], "messages")
+    second_messages = response_client.requests[1].messages
     assert response_text in second_messages[1].content
     assert "повторная генерация" in second_messages[0].content
 
@@ -140,7 +153,9 @@ async def test_advisor_retries_invalid_gigachat_response(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_advisor_falls_back_to_response_model(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_advisor_falls_back_to_response_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     advisor, filter_client, response_client = _advisor(85)
     filter_client.responses = [RuntimeError("empty response")] * 3
     response_client.responses = ['{"score": 15, "reason": "Только программирование"}']
@@ -155,4 +170,6 @@ async def test_advisor_falls_back_to_response_model(monkeypatch: pytest.MonkeyPa
     assert assessment.score == 15
     assert assessment.filter_model == "GigaChat-2-Pro"
     assert len(filter_client.requests) == 3
+    assert all(request.model == "GigaChat-2" for request in filter_client.requests)
     assert len(response_client.requests) == 1
+    assert response_client.requests[0].model == "GigaChat-2-Pro"

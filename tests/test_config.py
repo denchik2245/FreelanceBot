@@ -28,9 +28,18 @@ def test_ai_settings_are_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings.from_env()
 
     assert settings.ai_enabled
-    assert not settings.ai_fail_open
     assert settings.ai_min_score == 82
     assert settings.ai_filter_prompt_path.as_posix() == "config/prompts/project_filter.txt"
     assert settings.ai_response_prompt_path.as_posix() == "config/prompts/response_writer.txt"
-    assert settings.gigachat_filter_model == "GigaChat-2-Pro"
+    assert settings.gigachat_filter_model == "GigaChat-2"
     assert settings.gigachat_response_model == "GigaChat-2-Pro"
+
+
+def test_ai_rejects_empty_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("AI_ENABLED", "true")
+    monkeypatch.setenv("GIGACHAT_CREDENTIALS", "secret")
+    monkeypatch.setenv("GIGACHAT_FILTER_MODEL", "  ")
+
+    with pytest.raises(ValueError, match="не могут быть пустыми"):
+        Settings.from_env()

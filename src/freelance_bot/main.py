@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import aiohttp
 from dotenv import load_dotenv
@@ -68,8 +68,8 @@ def _is_fresh(project: Project, *, now: datetime | None = None) -> bool:
         return False
     published = project.published_at
     if published.tzinfo is None:
-        published = published.replace(tzinfo=timezone.utc)
-    current = now or datetime.now(timezone.utc)
+        published = published.replace(tzinfo=UTC)
+    current = now or datetime.now(UTC)
     return current - MAX_PROJECT_AGE <= published <= current + timedelta(hours=1)
 
 
@@ -159,10 +159,9 @@ async def _monitor_projects(
                             store.remember_ai_assessment(assessment)
                 except Exception:
                     LOGGER.exception("Не удалось проанализировать %s", project.key)
-                    if not settings.ai_fail_open:
-                        store.mark_seen(project.key, project.source)
-                        continue
-                    assessment = None
+                    # Never send an unchecked project. Leave it unseen so the next
+                    # polling cycle can retry after a temporary GigaChat failure.
+                    continue
                 if assessment is not None and not assessment.suitable:
                     store.mark_ai_rejected(project.key)
                     store.mark_seen(project.key, project.source)

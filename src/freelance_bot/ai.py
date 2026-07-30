@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self, TypeVar
+from typing import Any, Self
 
 from gigachat import GigaChat
 from gigachat.models import Chat, JsonSchemaResponseFormat, Messages, MessagesRole
@@ -19,7 +19,6 @@ from freelance_bot.models import AiAssessment, Project
 LOGGER = logging.getLogger(__name__)
 MAX_PROJECT_TEXT_LENGTH = 6_000
 RETRY_ATTEMPTS = 3
-T = TypeVar("T")
 FILTER_RESPONSE_FORMAT = JsonSchemaResponseFormat(
     schema={
         "type": "object",
@@ -34,7 +33,7 @@ FILTER_RESPONSE_FORMAT = JsonSchemaResponseFormat(
 )
 
 
-async def _with_retry(operation: Callable[[], Awaitable[T]], label: str) -> T:
+async def _with_retry[T](operation: Callable[[], Awaitable[T]], label: str) -> T:
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
             return await operation()
@@ -204,6 +203,7 @@ class GigaChatProjectAdvisor:
 
     async def assess(self, project: Project) -> AiAssessment:
         filter_request = Chat(
+            model=self._filter_model,
             temperature=0.1,
             max_tokens=400,
             response_format=FILTER_RESPONSE_FORMAT,
@@ -216,30 +216,34 @@ class GigaChatProjectAdvisor:
             ],
         )
 
-        async def request_filter(client: GigaChat) -> tuple[int, str]:
-            response = await client.achat(filter_request)
-            return _parse_filter_result(_response_text(response))
+        async def request_filter(client: GigaChat, requested_model: str) -> tuple[int, str, str]:
+            # Keep the model in the payload as well as in the client settings so
+            # SDK defaults can never silently route the request to another tier.
+            request = filter_request.model_copy(update={"model": requested_model}, deep=True)
+            response = await client.achat(request)
+            score, reason = _parse_filter_result(_response_text(response))
+            actual_model = str(getattr(response, "model", "") or requested_model)
+            return score, reason, actual_model
 
-        used_model = self._filter_model
         try:
-            score, reason = await _with_retry(
-                lambda: request_filter(self._filter_client),
+            score, reason, used_model = await _with_retry(
+                lambda: request_filter(self._filter_client, self._filter_model),
                 f"AI-оценка {project.key}",
             )
         except Exception:
             if self._response_model == self._filter_model:
                 raise
             LOGGER.warning(
-                "Основная AI-модель не оценила %s; пробую резервную %s",
+                "Модель оценки %s не оценила %s; пробую резервную %s",
+                self._filter_model,
                 project.key,
                 self._response_model,
                 exc_info=True,
             )
-            score, reason = await _with_retry(
-                lambda: request_filter(self._response_client),
+            score, reason, used_model = await _with_retry(
+                lambda: request_filter(self._response_client, self._response_model),
                 f"резервная AI-оценка {project.key}",
             )
-            used_model = self._response_model
         suitable = score >= self._min_score
         assessment = AiAssessment(
             project_key=project.key,
@@ -251,8 +255,9 @@ class GigaChatProjectAdvisor:
             response_model="",
         )
         LOGGER.info(
-            "AI-оценка %s: %d/100, подходит=%s — %s",
+            "AI-оценка %s моделью %s: %d/100, подходит=%s — %s",
             project.key,
+            used_model,
             score,
             suitable,
             reason,
@@ -270,6 +275,7 @@ class GigaChatProjectAdvisor:
             )
             user_content += f"\n\nПРЕДЫДУЩИЙ ОТКЛИК:\n{previous_response}"
         response_request = Chat(
+            model=self._response_model,
             temperature=0.5,
             max_tokens=900,
             messages=[
@@ -283,6 +289,8 @@ class GigaChatProjectAdvisor:
 
         async def request_response() -> str:
             response = await self._response_client.achat(response_request)
+            actual_model = str(getattr(response, "model", "") or self._response_model)
+            LOGGER.info("AI-отклик %s сгенерирован моделью %s", project.key, actual_model)
             return _response_text(response)
 
         return await _with_retry(request_response, f"AI-отклик {project.key}")
