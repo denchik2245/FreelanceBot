@@ -270,10 +270,7 @@ def _format_statistics(store: ProjectStore) -> str:
         weekend = weekend_labels.get(day.weekday())
         date_label = f"{day:%d.%m.%Y}" + (f" ({weekend})" if weekend else "")
         total = counts["Kwork"] + counts["FL.ru"] + counts["Profi.ru"]
-        lines.append(
-            f"{date_label} — Kwork {counts['Kwork']} · FL.ru {counts['FL.ru']} · "
-            f"Profi.ru {counts['Profi.ru']} · всего {total} · отклонено {counts['rejected']}"
-        )
+        lines.append(f"{date_label} — подходящих {total} · отклонено AI {counts['rejected']}")
     return "\n".join(lines)
 
 

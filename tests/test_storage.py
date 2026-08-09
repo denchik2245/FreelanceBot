@@ -175,9 +175,9 @@ def test_formatted_statistics_labels_weekends() -> None:
 
     message = _format_statistics(FakeStore())  # type: ignore[arg-type]
 
-    assert "09.08.2026 (воскресенье) — Kwork 0 · FL.ru 1" in message
-    assert "08.08.2026 (суббота) — Kwork 1 · FL.ru 0" in message
-    assert "всего 1 · отклонено 3" in message
+    assert "09.08.2026 (воскресенье) — подходящих 1 · отклонено AI 3" in message
+    assert "08.08.2026 (суббота) — подходящих 1 · отклонено AI 2" in message
+    assert "09.08.2026 (воскресенье) — Kwork" not in message
 
 
 def test_store_migrates_and_saves_project_description(tmp_path: Path) -> None:
