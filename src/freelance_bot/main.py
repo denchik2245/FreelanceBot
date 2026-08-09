@@ -242,6 +242,7 @@ async def _latest_suitable_projects(
 def _format_statistics(store: ProjectStore) -> str:
     statistics = store.project_statistics()
     ai_rejected = store.ai_rejected_statistics()
+    daily_statistics = store.daily_project_statistics(display_timezone=DISPLAY_TZ)
     started_at = store.statistics_started_at().astimezone(DISPLAY_TZ)
     labels = (("day", "За 24 часа"), ("week", "За 7 дней"), ("month", "За 30 дней"))
     lines = [
@@ -262,6 +263,16 @@ def _format_statistics(store: ProjectStore) -> str:
                 f"Всего подходящих — {kwork + fl + profi}",
                 f"Отклонено AI — {ai_rejected[period]}",
             )
+        )
+    lines.extend(("", "По дням за последние 30 дней"))
+    weekend_labels = {5: "суббота", 6: "воскресенье"}
+    for day, counts in reversed(daily_statistics.items()):
+        weekend = weekend_labels.get(day.weekday())
+        date_label = f"{day:%d.%m.%Y}" + (f" ({weekend})" if weekend else "")
+        total = counts["Kwork"] + counts["FL.ru"] + counts["Profi.ru"]
+        lines.append(
+            f"{date_label} — Kwork {counts['Kwork']} · FL.ru {counts['FL.ru']} · "
+            f"Profi.ru {counts['Profi.ru']} · всего {total} · отклонено {counts['rejected']}"
         )
     return "\n".join(lines)
 

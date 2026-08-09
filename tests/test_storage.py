@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from freelance_bot.main import _format_statistics
@@ -103,6 +103,81 @@ def test_store(tmp_path: Path) -> None:
     assert store.toggle_project_decision(project.key, "rejected") is None
     assert store.get_project_feedback(project.key) is None
     store.close()
+
+
+def test_daily_statistics_uses_display_timezone_and_includes_empty_days(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path / "daily.sqlite3")
+    store.set_state("statistics_started_at", "2026-07-01 00:00:00.000000")
+    project = Project(
+        "Kwork",
+        "daily-1",
+        "Лендинг",
+        "Описание",
+        "",
+        "https://example.com/daily-1",
+        "Дизайн",
+    )
+    store.remember_project(project)
+    store.remember_ai_assessment(
+        AiAssessment(
+            project_key=project.key,
+            suitable=True,
+            score=90,
+            reason="Подходит",
+            response_text="",
+            filter_model="GigaChat-2",
+            response_model="",
+            summary="Нужен лендинг",
+        )
+    )
+    store._connection.execute(
+        "UPDATE project_ai_assessments SET analyzed_at = ? WHERE project_key = ?",
+        ("2026-08-08 20:30:00.000000", project.key),
+    )
+    store._connection.commit()
+
+    display_timezone = timezone(timedelta(hours=5))
+    daily = store.daily_project_statistics(
+        days=3,
+        display_timezone=display_timezone,
+        now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc),
+    )
+
+    assert [day.isoformat() for day in daily] == ["2026-08-08", "2026-08-09", "2026-08-10"]
+    assert daily[datetime(2026, 8, 9).date()]["Kwork"] == 1
+    assert daily[datetime(2026, 8, 8).date()]["Kwork"] == 0
+    assert daily[datetime(2026, 8, 10).date()]["rejected"] == 0
+    store.close()
+
+
+def test_formatted_statistics_labels_weekends() -> None:
+    saturday = datetime(2026, 8, 8).date()
+    sunday = datetime(2026, 8, 9).date()
+
+    class FakeStore:
+        def project_statistics(self) -> dict[str, dict[str, int]]:
+            return {
+                source: {"day": 0, "week": 0, "month": 0}
+                for source in ("Kwork", "FL.ru", "Profi.ru")
+            }
+
+        def ai_rejected_statistics(self) -> dict[str, int]:
+            return {"day": 0, "week": 0, "month": 0}
+
+        def daily_project_statistics(self, **_: object) -> dict[object, dict[str, int]]:
+            return {
+                saturday: {"Kwork": 1, "FL.ru": 0, "Profi.ru": 0, "rejected": 2},
+                sunday: {"Kwork": 0, "FL.ru": 1, "Profi.ru": 0, "rejected": 3},
+            }
+
+        def statistics_started_at(self) -> datetime:
+            return datetime(2026, 8, 1, tzinfo=timezone.utc)
+
+    message = _format_statistics(FakeStore())  # type: ignore[arg-type]
+
+    assert "09.08.2026 (воскресенье) — Kwork 0 · FL.ru 1" in message
+    assert "08.08.2026 (суббота) — Kwork 1 · FL.ru 0" in message
+    assert "всего 1 · отклонено 3" in message
 
 
 def test_store_migrates_and_saves_project_description(tmp_path: Path) -> None:

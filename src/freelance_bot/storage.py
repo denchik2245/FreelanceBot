@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from freelance_bot.models import AiAssessment, Project
@@ -454,6 +454,84 @@ class ProjectStore:
                 (modifier, started_at),
             ).fetchone()
             result[period] = int(row[0]) if row is not None else 0
+        return result
+
+    def daily_project_statistics(
+        self,
+        *,
+        days: int = 30,
+        display_timezone: tzinfo = timezone.utc,
+        now: datetime | None = None,
+    ) -> dict[date, dict[str, int]]:
+        if days < 1:
+            raise ValueError("Количество дней должно быть положительным")
+
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        local_today = current.astimezone(display_timezone).date()
+        first_day = local_today - timedelta(days=days - 1)
+        result = {
+            first_day + timedelta(days=offset): {
+                "Kwork": 0,
+                "FL.ru": 0,
+                "Profi.ru": 0,
+                "rejected": 0,
+            }
+            for offset in range(days)
+        }
+
+        range_start = datetime.combine(first_day, time.min, tzinfo=display_timezone).astimezone(
+            timezone.utc
+        )
+        range_end = datetime.combine(
+            local_today + timedelta(days=1), time.min, tzinfo=display_timezone
+        ).astimezone(timezone.utc)
+        started_at = self.statistics_started_at()
+        effective_start = max(range_start, started_at)
+
+        def sql_timestamp(value: datetime) -> str:
+            return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+        def local_date(value: object) -> date:
+            parsed = datetime.fromisoformat(str(value))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(display_timezone).date()
+
+        start_value = sql_timestamp(effective_start)
+        end_value = sql_timestamp(range_end)
+        assessment_rows = self._connection.execute(
+            """
+            SELECT assessment.analyzed_at, catalog.source
+            FROM project_ai_assessments AS assessment
+            JOIN project_catalog AS catalog USING(project_key)
+            WHERE assessment.suitable = 1
+              AND assessment.analyzed_at >= ?
+              AND assessment.analyzed_at < ?
+              AND catalog.source IN ('Kwork', 'FL.ru', 'Profi.ru')
+            """,
+            (start_value, end_value),
+        ).fetchall()
+        for analyzed_at, source in assessment_rows:
+            day = local_date(analyzed_at)
+            if day in result:
+                result[day][str(source)] += 1
+
+        rejected_rows = self._connection.execute(
+            """
+            SELECT rejected_at
+            FROM project_ai_rejections
+            WHERE rejected_at >= ?
+              AND rejected_at < ?
+            """,
+            (start_value, end_value),
+        ).fetchall()
+        for (rejected_at,) in rejected_rows:
+            day = local_date(rejected_at)
+            if day in result:
+                result[day]["rejected"] += 1
+
         return result
 
     def statistics_started_at(self) -> datetime:
