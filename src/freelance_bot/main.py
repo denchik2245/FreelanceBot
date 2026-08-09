@@ -264,9 +264,11 @@ def _format_statistics(store: ProjectStore) -> str:
                 f"Отклонено AI — {ai_rejected[period]}",
             )
         )
-    lines.extend(("", "По дням за последние 30 дней"))
+    lines.extend(("", "По дням с начала месяца"))
     weekend_labels = {5: "суббота", 6: "воскресенье"}
-    for day, counts in reversed(daily_statistics.items()):
+    for index, (day, counts) in enumerate(reversed(daily_statistics.items())):
+        if index:
+            lines.append("")
         weekend = weekend_labels.get(day.weekday())
         date_label = f"{day:%d.%m.%Y}" + (f" ({weekend})" if weekend else "")
         total = counts["Kwork"] + counts["FL.ru"] + counts["Profi.ru"]

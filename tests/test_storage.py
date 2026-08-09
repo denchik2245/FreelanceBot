@@ -147,6 +147,14 @@ def test_daily_statistics_uses_display_timezone_and_includes_empty_days(tmp_path
     assert daily[datetime(2026, 8, 9).date()]["Kwork"] == 1
     assert daily[datetime(2026, 8, 8).date()]["Kwork"] == 0
     assert daily[datetime(2026, 8, 10).date()]["rejected"] == 0
+
+    month_to_date = store.daily_project_statistics(
+        display_timezone=display_timezone,
+        now=datetime(2026, 8, 9, 12, tzinfo=timezone.utc),
+    )
+    assert len(month_to_date) == 9
+    assert next(iter(month_to_date)).isoformat() == "2026-08-01"
+    assert next(reversed(month_to_date)).isoformat() == "2026-08-09"
     store.close()
 
 
@@ -177,6 +185,8 @@ def test_formatted_statistics_labels_weekends() -> None:
 
     assert "09.08.2026 (воскресенье) — подходящих 1 · отклонено AI 3" in message
     assert "08.08.2026 (суббота) — подходящих 1 · отклонено AI 2" in message
+    assert "По дням с начала месяца" in message
+    assert "отклонено AI 3\n\n08.08.2026" in message
     assert "09.08.2026 (воскресенье) — Kwork" not in message
 
 

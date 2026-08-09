@@ -459,18 +459,23 @@ class ProjectStore:
     def daily_project_statistics(
         self,
         *,
-        days: int = 30,
+        days: int | None = None,
         display_timezone: tzinfo = timezone.utc,
         now: datetime | None = None,
     ) -> dict[date, dict[str, int]]:
-        if days < 1:
+        if days is not None and days < 1:
             raise ValueError("Количество дней должно быть положительным")
 
         current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:
             current = current.replace(tzinfo=timezone.utc)
         local_today = current.astimezone(display_timezone).date()
-        first_day = local_today - timedelta(days=days - 1)
+        first_day = (
+            local_today.replace(day=1)
+            if days is None
+            else local_today - timedelta(days=days - 1)
+        )
+        period_days = (local_today - first_day).days + 1
         result = {
             first_day + timedelta(days=offset): {
                 "Kwork": 0,
@@ -478,7 +483,7 @@ class ProjectStore:
                 "Profi.ru": 0,
                 "rejected": 0,
             }
-            for offset in range(days)
+            for offset in range(period_days)
         }
 
         range_start = datetime.combine(first_day, time.min, tzinfo=display_timezone).astimezone(
