@@ -549,7 +549,7 @@ async def _listen_for_commands(
                 else:
                     assert profi_source is not None
                     async with profi_lock:
-                        projects = await profi_source.fetch()
+                        projects = await profi_source.fetch_for_manual_selection()
             except Exception:
                 LOGGER.exception("Ошибка тестовой выдачи %s", source_name)
                 await show_notice(

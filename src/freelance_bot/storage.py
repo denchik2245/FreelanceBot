@@ -546,10 +546,14 @@ class ProjectStore:
         return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
 
     def reset_statistics(self) -> datetime:
-        started_at = datetime.now(timezone.utc)
+        current = datetime.now(timezone.utc)
+        # SQLite strftime('%f') stores milliseconds. Keep the reset marker at
+        # the same precision so an assessment written in this millisecond is
+        # not accidentally considered older than the reset.
+        started_at = current.replace(microsecond=current.microsecond // 1000 * 1000)
         self.set_state(
             "statistics_started_at",
-            started_at.strftime("%Y-%m-%d %H:%M:%S.%f"),
+            f"{started_at:%Y-%m-%d %H:%M:%S}.{started_at.microsecond // 1000:03d}",
         )
         return started_at
 
