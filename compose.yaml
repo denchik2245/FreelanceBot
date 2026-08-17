@@ -5,6 +5,7 @@ services:
     env_file: ${ENV_FILE:-.env}
     volumes:
       - ./data:/app/data
+      - ./config:/app/config
     logging:
       driver: json-file
       options:

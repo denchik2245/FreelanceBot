@@ -6,11 +6,13 @@ import pytest
 from freelance_bot.models import AiAssessment, Project
 from freelance_bot.vk import (
     COMMAND_CLEAR_CHAT,
+    COMMAND_CONFIG_TEXTS,
     COMMAND_FL,
     COMMAND_KWORK,
     COMMAND_RECENT,
     COMMAND_RESPONDED,
     COMMAND_SETTINGS,
+    COMMAND_SET_CONFIG_TEXT,
     COMMAND_WRITE_RESPONSE,
     VkApiError,
     VkBot,
@@ -40,6 +42,36 @@ def test_parse_button_payload_and_text() -> None:
     assert parse_command({"text": "Настройки"}).name == COMMAND_SETTINGS
     assert parse_command({"text": "Последние проекты"}).name == COMMAND_RECENT
     assert parse_command({"text": "неизвестная команда"}) is None
+
+
+def test_parse_config_view_and_inline_replacement() -> None:
+    menu = parse_command({"text": "/config"})
+    assert menu is not None
+    assert menu.name == COMMAND_CONFIG_TEXTS
+
+    replacement = parse_command({"text": "/set filter\nНовый\nмногострочный промпт"})
+    assert replacement is not None
+    assert replacement.name == COMMAND_SET_CONFIG_TEXT
+    assert replacement.config_key == "filter"
+    assert replacement.content == "Новый\nмногострочный промпт"
+
+
+def test_parse_config_replacement_from_txt_attachment() -> None:
+    replacement = parse_command(
+        {
+            "text": "/set response",
+            "attachments": [
+                {
+                    "type": "doc",
+                    "doc": {"title": "response.txt", "url": "https://vk.example/file"},
+                }
+            ],
+        }
+    )
+
+    assert replacement is not None
+    assert replacement.document_name == "response.txt"
+    assert replacement.document_url == "https://vk.example/file"
 
 
 def test_parse_callback_event_context() -> None:

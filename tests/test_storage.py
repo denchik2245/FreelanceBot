@@ -183,10 +183,12 @@ def test_formatted_statistics_labels_weekends() -> None:
 
     message = _format_statistics(FakeStore())  # type: ignore[arg-type]
 
-    assert "09.08.2026 (воскресенье) — подходящих 1 · отклонено AI 3" in message
-    assert "08.08.2026 (суббота) — подходящих 1 · отклонено AI 2" in message
+    assert "09.08.2026 (воскресенье) — подходящих 1" in message
+    assert "08.08.2026 (суббота) — подходящих 1" in message
     assert "По дням с начала месяца" in message
-    assert "отклонено AI 3\n\n08.08.2026" in message
+    daily_section = message.split("По дням с начала месяца", maxsplit=1)[1]
+    assert "отклонено AI" not in daily_section
+    assert "09.08.2026 (воскресенье) — подходящих 1\n\n08.08.2026" in daily_section
     assert "09.08.2026 (воскресенье) — Kwork" not in message
 
 

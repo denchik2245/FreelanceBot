@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -31,6 +32,9 @@ COMMAND_WRITE_RESPONSE = "write_response"
 COMMAND_CLIENT_REPLIED = "client_replied"
 COMMAND_CLIENT_CHOSE_OTHER = "client_chose_other"
 COMMAND_RESPONSE_PROJECT = "response_project"
+COMMAND_CONFIG_TEXTS = "config_texts"
+COMMAND_VIEW_CONFIG_TEXT = "view_config_text"
+COMMAND_SET_CONFIG_TEXT = "set_config_text"
 DISPLAY_TZ = timezone(timedelta(hours=5))
 ALL_COMMANDS = {
     COMMAND_KWORK,
@@ -52,6 +56,9 @@ ALL_COMMANDS = {
     COMMAND_CLIENT_REPLIED,
     COMMAND_CLIENT_CHOSE_OTHER,
     COMMAND_RESPONSE_PROJECT,
+    COMMAND_CONFIG_TEXTS,
+    COMMAND_VIEW_CONFIG_TEXT,
+    COMMAND_SET_CONFIG_TEXT,
 }
 
 
@@ -62,6 +69,10 @@ class BotCommand:
     peer_id: int | None = None
     conversation_message_id: int | None = None
     event_id: str | None = None
+    config_key: str | None = None
+    content: str | None = None
+    document_url: str | None = None
+    document_name: str | None = None
 
 
 class VkApiError(RuntimeError):
@@ -271,6 +282,14 @@ def settings_keyboard_json(*, kwork_enabled: bool, fl_enabled: bool, profi_enabl
         },
         "color": "negative",
     }
+    config_texts = {
+        "action": {
+            "type": "callback",
+            "label": "📝 AI-тексты",
+            "payload": json.dumps({"command": COMMAND_CONFIG_TEXTS}, ensure_ascii=False),
+        },
+        "color": "secondary",
+    }
     keyboard = {
         "one_time": False,
         "inline": False,
@@ -279,10 +298,38 @@ def settings_keyboard_json(*, kwork_enabled: bool, fl_enabled: bool, profi_enabl
             [toggle("FL.ru", COMMAND_TOGGLE_FL, fl_enabled)],
             [toggle("Profi.ru", COMMAND_TOGGLE_PROFI, profi_enabled)],
             [clear_chat],
+            [config_texts],
             [back],
         ],
     }
     return json.dumps(keyboard, ensure_ascii=False, separators=(",", ":"))
+
+
+def config_texts_keyboard_json() -> str:
+    def button(label: str, key: str) -> dict[str, Any]:
+        return {
+            "action": {
+                "type": "callback",
+                "label": label,
+                "payload": json.dumps(
+                    {"command": COMMAND_VIEW_CONFIG_TEXT, "config_key": key},
+                    ensure_ascii=False,
+                ),
+            },
+            "color": "secondary",
+        }
+
+    buttons = [
+        [button("👤 Профиль исполнителя", "profile")],
+        [button("🔎 Промпт отбора", "filter")],
+        [button("✍ Промпт отклика", "response")],
+        json.loads(back_keyboard_json())["buttons"][0],
+    ]
+    return json.dumps(
+        {"one_time": False, "inline": False, "buttons": buttons},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def back_keyboard_json() -> str:
@@ -373,6 +420,7 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
         command = payload.get("command")
         if command in ALL_COMMANDS:
             project_key = payload.get("project_key")
+            config_key = payload.get("config_key")
             return BotCommand(
                 str(command),
                 str(project_key) if isinstance(project_key, str) and project_key else None,
@@ -381,9 +429,47 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
                 if message.get("conversation_message_id") is not None
                 else None,
                 str(message["event_id"]) if message.get("event_id") else None,
+                config_key=str(config_key) if config_key in {"profile", "filter", "response"} else None,
             )
 
-    text = str(message.get("text", "")).strip().casefold()
+    original_text = str(message.get("text", "")).strip()
+    text = original_text.casefold()
+    first_line, _, body = original_text.partition("\n")
+    command_parts = first_line.strip().casefold().split(maxsplit=1)
+    if command_parts and command_parts[0] in {"/config", "/set"}:
+        key = command_parts[1] if len(command_parts) == 2 else None
+        if key is not None and key not in {"profile", "filter", "response"}:
+            return None
+        if command_parts[0] == "/config":
+            return BotCommand(
+                COMMAND_VIEW_CONFIG_TEXT if key else COMMAND_CONFIG_TEXTS,
+                peer_id=int(message["peer_id"]) if message.get("peer_id") is not None else None,
+                conversation_message_id=int(message["conversation_message_id"])
+                if message.get("conversation_message_id") is not None
+                else None,
+                config_key=key,
+            )
+        document_url = None
+        document_name = None
+        for attachment in message.get("attachments", []):
+            document = attachment.get("doc") if isinstance(attachment, dict) else None
+            if isinstance(document, dict) and str(document.get("title", "")).lower().endswith(
+                ".txt"
+            ):
+                document_url = str(document.get("url", "")) or None
+                document_name = str(document.get("title", "")) or None
+                break
+        return BotCommand(
+            COMMAND_SET_CONFIG_TEXT,
+            peer_id=int(message["peer_id"]) if message.get("peer_id") is not None else None,
+            conversation_message_id=int(message["conversation_message_id"])
+            if message.get("conversation_message_id") is not None
+            else None,
+            config_key=key,
+            content=body.strip() or None,
+            document_url=document_url,
+            document_name=document_name,
+        )
     text_commands = {
         "последние 5 kwork": COMMAND_KWORK,
         "последние 5 fl.ru": COMMAND_FL,
@@ -469,6 +555,24 @@ class VkBot:
             await self._api("messages.send", **params)
             return False
         return True
+
+    async def download_text_document(self, url: str, *, max_bytes: int = 100_000) -> str:
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError("VK передал некорректную ссылку на документ")
+        async with self._session.get(url) as response:
+            response.raise_for_status()
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in response.content.iter_chunked(16_384):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise ValueError("TXT-файл больше 100 КБ")
+                chunks.append(chunk)
+        try:
+            return b"".join(chunks).decode("utf-8-sig")
+        except UnicodeDecodeError as error:
+            raise ValueError("TXT-файл должен быть в кодировке UTF-8") from error
 
     async def edit_text(self, conversation_message_id: int, message: str, *, keyboard: str) -> None:
         await self._api(

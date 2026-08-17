@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from freelance_bot.ai import GigaChatProjectAdvisor
 from freelance_bot.config import Settings
+from freelance_bot.config_texts import ConfigTextManager
 from freelance_bot.keywords import matches_project_keywords
 from freelance_bot.models import AiAssessment, Project
 from freelance_bot.sources.fl import FlSource
@@ -18,6 +19,7 @@ from freelance_bot.vk import (
     COMMAND_CLEAR_STATISTICS,
     COMMAND_CLIENT_CHOSE_OTHER,
     COMMAND_CLIENT_REPLIED,
+    COMMAND_CONFIG_TEXTS,
     COMMAND_FL,
     COMMAND_KWORK,
     COMMAND_MENU,
@@ -32,10 +34,13 @@ from freelance_bot.vk import (
     COMMAND_TOGGLE_FL,
     COMMAND_TOGGLE_KWORK,
     COMMAND_TOGGLE_PROFI,
+    COMMAND_SET_CONFIG_TEXT,
+    COMMAND_VIEW_CONFIG_TEXT,
     COMMAND_WRITE_RESPONSE,
     DISPLAY_TZ,
     BotCommand,
     VkBot,
+    config_texts_keyboard_json,
     format_message,
     keyboard_json,
     project_keyboard_json,
@@ -272,7 +277,7 @@ def _format_statistics(store: ProjectStore) -> str:
         weekend = weekend_labels.get(day.weekday())
         date_label = f"{day:%d.%m.%Y}" + (f" ({weekend})" if weekend else "")
         total = counts["Kwork"] + counts["FL.ru"] + counts["Profi.ru"]
-        lines.append(f"{date_label} — подходящих {total} · отклонено AI {counts['rejected']}")
+        lines.append(f"{date_label} — подходящих {total}")
     return "\n".join(lines)
 
 
@@ -300,6 +305,7 @@ async def _listen_for_commands(
     kwork_lock: asyncio.Lock,
     profi_lock: asyncio.Lock,
     advisor: GigaChatProjectAdvisor | None,
+    config_texts: ConfigTextManager,
 ) -> None:
     command_lock = asyncio.Lock()
 
@@ -341,6 +347,29 @@ async def _listen_for_commands(
         await bot.set_persistent_keyboard(keyboard)
         await bot.replace_ui(message)
 
+    async def show_config_texts() -> None:
+        await show_notice(
+            "📝 AI-тексты\n\nВыберите файл для просмотра и инструкции по замене.",
+            config_texts_keyboard_json(),
+        )
+
+    async def show_config_text(key: str) -> None:
+        item = config_texts.get(key)
+        current = config_texts.read(key).strip()
+        preview_limit = 2_700
+        preview = current[:preview_limit]
+        if len(current) > preview_limit:
+            preview += "\n… (показано не полностью)"
+        await show_notice(
+            f"📝 {item.label}\n"
+            f"Файл: {item.path.name} · {len(current)} символов\n\n"
+            f"{preview}\n\n"
+            f"Чтобы заменить, отправьте одним сообщением:\n"
+            f"/set {key}\nНОВЫЙ ТЕКСТ\n\n"
+            f"Для длинного текста прикрепите UTF-8 .txt к сообщению /set {key}.",
+            config_texts_keyboard_json(),
+        )
+
     async def refresh_project_description(project: Project) -> Project:
         if project.description:
             return project
@@ -371,6 +400,49 @@ async def _listen_for_commands(
 
     async def handle(event: BotCommand) -> None:
         command = event.name
+        if command == COMMAND_CONFIG_TEXTS:
+            await show_config_texts()
+            return
+        if command == COMMAND_VIEW_CONFIG_TEXT:
+            if event.config_key is None:
+                await show_config_texts()
+                return
+            try:
+                await show_config_text(event.config_key)
+            except Exception:
+                LOGGER.exception("Не удалось показать AI-текст %s", event.config_key)
+                await show_notice(
+                    "⚠️ Не удалось прочитать файл.", config_texts_keyboard_json()
+                )
+            return
+        if command == COMMAND_SET_CONFIG_TEXT:
+            if event.config_key is None:
+                await show_notice(
+                    "⚠️ Укажите файл: /set profile, /set filter или /set response.",
+                    config_texts_keyboard_json(),
+                )
+                return
+            try:
+                content = event.content
+                if event.document_url is not None:
+                    content = await bot.download_text_document(event.document_url)
+                if content is None:
+                    raise ValueError("Добавьте новый текст после команды или прикрепите .txt")
+                applied = config_texts.replace(event.config_key, content)
+                if advisor is not None:
+                    advisor.update_config_text(event.config_key, applied)
+                item = config_texts.get(event.config_key)
+            except (ValueError, RuntimeError, OSError, aiohttp.ClientError) as error:
+                LOGGER.warning("Не удалось заменить AI-текст: %s", error)
+                await show_notice(f"⚠️ {error}", config_texts_keyboard_json())
+                return
+            await show_notice(
+                f"✅ {item.label} обновлён ({len(applied)} символов).\n"
+                "Изменение уже применяется к новым запросам AI. "
+                "Предыдущая версия сохранена рядом в .bak.",
+                config_texts_keyboard_json(),
+            )
+            return
         if command == COMMAND_WRITE_RESPONSE:
             if event.project_key is None:
                 return
@@ -600,6 +672,11 @@ async def run(settings: Settings) -> None:
     store = ProjectStore(settings.database_path)
     kwork_source = KworkSource(settings.kwork_login, settings.kwork_password)
     advisor: GigaChatProjectAdvisor | None = None
+    config_texts = ConfigTextManager(
+        profile_path=settings.ai_profile_path,
+        filter_prompt_path=settings.ai_filter_prompt_path,
+        response_prompt_path=settings.ai_response_prompt_path,
+    )
     try:
         if settings.ai_enabled:
             advisor = GigaChatProjectAdvisor.from_paths(
@@ -689,6 +766,7 @@ async def run(settings: Settings) -> None:
                     kwork_lock,
                     profi_lock,
                     advisor,
+                    config_texts,
                 ),
             )
     finally:

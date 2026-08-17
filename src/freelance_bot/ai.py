@@ -161,6 +161,22 @@ class GigaChatProjectAdvisor:
     def response_model(self) -> str:
         return self._response_model
 
+    def update_config_text(self, key: str, text: str) -> None:
+        """Apply an already validated config edit without restarting the clients."""
+        value = text.strip()
+        if not value:
+            raise ValueError("AI-текст не может быть пустым")
+        attributes = {
+            "profile": "_profile",
+            "filter": "_filter_prompt",
+            "response": "_response_prompt",
+        }
+        try:
+            attribute = attributes[key]
+        except KeyError as error:
+            raise ValueError("Неизвестный AI-текст") from error
+        setattr(self, attribute, value)
+
     @classmethod
     def from_paths(
         cls,
