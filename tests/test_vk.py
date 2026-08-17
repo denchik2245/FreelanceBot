@@ -5,8 +5,8 @@ import pytest
 
 from freelance_bot.models import AiAssessment, Project
 from freelance_bot.vk import (
-    COMMAND_CLEAR_CHAT,
     COMMAND_CONFIG_TEXTS,
+    COMMAND_FILTER_SETTINGS,
     COMMAND_FL,
     COMMAND_KWORK,
     COMMAND_RECENT,
@@ -14,6 +14,7 @@ from freelance_bot.vk import (
     COMMAND_RESPONDED,
     COMMAND_SETTINGS,
     COMMAND_SET_CONFIG_TEXT,
+    COMMAND_UPDATE_FILTER,
     COMMAND_WRITE_RESPONSE,
     VkApiError,
     VkBot,
@@ -23,6 +24,7 @@ from freelance_bot.vk import (
     project_keyboard_json,
     recent_keyboard_json,
     response_variants_keyboard_json,
+    source_settings_keyboard_json,
     settings_keyboard_json,
     statistics_keyboard_json,
 )
@@ -239,19 +241,44 @@ async def test_project_does_not_send_ready_response_automatically() -> None:
     assert "Готовый текст отклика" not in calls[0][0]
 
 
-def test_settings_keyboard_reflects_notification_state() -> None:
+def test_settings_keyboard_is_grouped_into_clear_sections() -> None:
+    keyboard = json.loads(settings_keyboard_json())
+    labels = [row[0]["action"]["label"] for row in keyboard["buttons"]]
+
+    assert labels == [
+        "🔔 Источники уведомлений",
+        "🎯 Фильтры проектов",
+        "🌙 Тихие часы",
+        "📝 AI-тексты",
+        "🗑 Очистить чат",
+        "← Главное меню",
+    ]
+    filters_event = parse_command({"payload": keyboard["buttons"][1][0]["action"]["payload"]})
+    assert filters_event is not None
+    assert filters_event.name == COMMAND_FILTER_SETTINGS
+
+
+def test_source_settings_keyboard_reflects_notification_state() -> None:
     keyboard = json.loads(
-        settings_keyboard_json(kwork_enabled=True, fl_enabled=False, profi_enabled=True)
+        source_settings_keyboard_json(kwork_enabled=True, fl_enabled=False, profi_enabled=True)
     )
     assert keyboard["buttons"][0][0]["action"]["label"] == "Kwork: ✅ вкл"
     assert keyboard["buttons"][1][0]["action"]["label"] == "FL.ru: ⛔ выкл"
     assert keyboard["buttons"][2][0]["action"]["label"] == "Profi.ru: ✅ вкл"
-    clear_chat = keyboard["buttons"][3][0]
-    assert clear_chat["action"]["label"] == "🗑 Очистить чат"
-    assert clear_chat["color"] == "negative"
-    event = parse_command({"payload": clear_chat["action"]["payload"]})
-    assert event is not None
-    assert event.name == COMMAND_CLEAR_CHAT
+    assert keyboard["buttons"][3][0]["action"]["label"] == "← К настройкам"
+
+
+def test_parse_filter_update_commands() -> None:
+    score = parse_command({"text": "/score 82"})
+    assert score is not None
+    assert score.name == COMMAND_UPDATE_FILTER
+    assert score.filter_name == "score"
+    assert score.content == "82"
+
+    include = parse_command({"text": "/include\nfigma, tilda"})
+    assert include is not None
+    assert include.filter_name == "include"
+    assert include.content == "figma, tilda"
 
 
 def test_statistics_keyboard_has_destructive_reset() -> None:

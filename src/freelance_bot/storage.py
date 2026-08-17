@@ -547,6 +547,10 @@ class ProjectStore:
 
     def reset_statistics(self) -> datetime:
         started_at = datetime.now(timezone.utc)
+        # SQLite's strftime stores assessment timestamps with millisecond precision.
+        # Use the same precision so an assessment created in this millisecond is not
+        # accidentally sorted before the freshly reset boundary.
+        started_at = started_at.replace(microsecond=started_at.microsecond // 1000 * 1000)
         self.set_state(
             "statistics_started_at",
             started_at.strftime("%Y-%m-%d %H:%M:%S.%f"),

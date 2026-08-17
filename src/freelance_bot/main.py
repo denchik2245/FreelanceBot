@@ -10,6 +10,7 @@ from freelance_bot.config import Settings
 from freelance_bot.config_texts import ConfigTextManager
 from freelance_bot.keywords import matches_project_keywords
 from freelance_bot.models import AiAssessment, Project
+from freelance_bot.project_filters import ProjectFilterManager
 from freelance_bot.sources.fl import FlSource
 from freelance_bot.sources.kwork import KworkSource
 from freelance_bot.sources.profi import ProfiSource
@@ -20,10 +21,13 @@ from freelance_bot.vk import (
     COMMAND_CLIENT_CHOSE_OTHER,
     COMMAND_CLIENT_REPLIED,
     COMMAND_CONFIG_TEXTS,
+    COMMAND_EDIT_FILTER,
     COMMAND_FL,
+    COMMAND_FILTER_SETTINGS,
     COMMAND_KWORK,
     COMMAND_MENU,
     COMMAND_PROFI,
+    COMMAND_QUIET_SETTINGS,
     COMMAND_RECENT,
     COMMAND_REJECTED,
     COMMAND_REWRITE_RESPONSE,
@@ -31,6 +35,7 @@ from freelance_bot.vk import (
     COMMAND_RESPONSE_PROJECT,
     COMMAND_RESPONSES,
     COMMAND_SETTINGS,
+    COMMAND_SOURCE_SETTINGS,
     COMMAND_STATISTICS,
     COMMAND_TOGGLE_FL,
     COMMAND_TOGGLE_KWORK,
@@ -38,11 +43,13 @@ from freelance_bot.vk import (
     COMMAND_SET_CONFIG_TEXT,
     COMMAND_VIEW_CONFIG_TEXT,
     COMMAND_WRITE_RESPONSE,
+    COMMAND_UPDATE_FILTER,
     DISPLAY_TZ,
     BotCommand,
     VkBot,
     config_texts_keyboard_json,
     format_message,
+    filter_settings_keyboard_json,
     keyboard_json,
     project_keyboard_json,
     recent_keyboard_json,
@@ -50,6 +57,8 @@ from freelance_bot.vk import (
     response_variants_keyboard_json,
     responses_keyboard_json,
     settings_keyboard_json,
+    quiet_settings_keyboard_json,
+    source_settings_keyboard_json,
     statistics_keyboard_json,
 )
 
@@ -121,6 +130,7 @@ async def _monitor_projects(
     profi_lock: asyncio.Lock,
     bot: VkBot,
     advisor: GigaChatProjectAdvisor | None,
+    project_filters: ProjectFilterManager,
 ) -> None:
     while True:
         projects_by_source = await _fetch_sources(
@@ -156,6 +166,18 @@ async def _monitor_projects(
                         project.title,
                     )
                     continue
+                rejection_reason = project_filters.rejection_reason(project)
+                if rejection_reason is not None:
+                    store.mark_seen(project.key, project.source, count_for_statistics=False)
+                    LOGGER.info(
+                        "Пользовательский фильтр пропустил %s: %s",
+                        project.key,
+                        rejection_reason,
+                    )
+                    continue
+                if project_filters.is_quiet_now(datetime.now(DISPLAY_TZ)):
+                    LOGGER.debug("Тихие часы: %s оставлен в очереди", project.key)
+                    continue
                 assessment = None
                 try:
                     store.remember_project(project)
@@ -169,7 +191,10 @@ async def _monitor_projects(
                     # Never send an unchecked project. Leave it unseen so the next
                     # polling cycle can retry after a temporary GigaChat failure.
                     continue
-                if assessment is not None and not assessment.suitable:
+                if (
+                    assessment is not None
+                    and assessment.score < project_filters.settings().min_ai_score
+                ):
                     store.mark_ai_rejected(project.key)
                     store.mark_seen(project.key, project.source)
                     LOGGER.info(
@@ -210,6 +235,7 @@ async def _latest_suitable_projects(
     advisor: GigaChatProjectAdvisor,
     *,
     limit: int = 5,
+    project_filters: ProjectFilterManager | None = None,
 ) -> list[tuple[Project, AiAssessment]]:
     """Walk newest-first until enough successfully assessed suitable projects are found."""
     selected: list[tuple[Project, AiAssessment]] = []
@@ -222,6 +248,8 @@ async def _latest_suitable_projects(
         reverse=True,
     )
     for project in candidates:
+        if project_filters is not None and project_filters.rejection_reason(project) is not None:
+            continue
         store.remember_project(project)
         assessment = store.get_ai_assessment(project.key)
         if assessment is None or not assessment.summary:
@@ -231,7 +259,12 @@ async def _latest_suitable_projects(
             except Exception:
                 LOGGER.exception("Не удалось оценить проект ручной выдачи %s", project.key)
                 continue
-        if not assessment.suitable:
+        suitable = (
+            assessment.score >= project_filters.settings().min_ai_score
+            if project_filters is not None
+            else assessment.suitable
+        )
+        if not suitable:
             store.mark_ai_rejected(project.key)
             LOGGER.info(
                 "AI отфильтровал проект ручной выдачи %s: %d/100 — %s",
@@ -308,6 +341,7 @@ async def _listen_for_commands(
     profi_lock: asyncio.Lock,
     advisor: GigaChatProjectAdvisor | None,
     config_texts: ConfigTextManager,
+    project_filters: ProjectFilterManager,
 ) -> None:
     command_lock = asyncio.Lock()
     response_lock = asyncio.Lock()
@@ -325,8 +359,12 @@ async def _listen_for_commands(
 
     async def show_settings() -> None:
         await bot.hide_ui()
+        await bot.set_persistent_keyboard(settings_keyboard_json())
+
+    async def show_sources() -> None:
+        await bot.hide_ui()
         await bot.set_persistent_keyboard(
-            settings_keyboard_json(
+            source_settings_keyboard_json(
                 kwork_enabled=store.notifications_enabled("Kwork"),
                 fl_enabled=store.notifications_enabled("FL.ru"),
                 profi_enabled=store.notifications_enabled("Profi.ru"),
@@ -349,6 +387,82 @@ async def _listen_for_commands(
     async def show_notice(message: str, keyboard: str) -> None:
         await bot.set_persistent_keyboard(keyboard)
         await bot.replace_ui(message)
+
+    async def show_filter_settings() -> None:
+        current = project_filters.settings()
+        budget = (
+            f"{current.min_budget:,} ₽".replace(",", " ")
+            if current.min_budget
+            else "выключен"
+        )
+        include = ", ".join(current.include_keywords) or "не заданы"
+        exclude = ", ".join(current.exclude_keywords) or "не заданы"
+        await show_notice(
+            "🎯 Фильтры проектов\n\n"
+            f"Минимальный AI-балл — {current.min_ai_score}\n"
+            f"Минимальный бюджет — {budget}\n"
+            f"Желательные слова — {include}\n"
+            f"Исключающие слова — {exclude}\n\n"
+            "Проекты без указанного бюджета не отбрасываются.",
+            filter_settings_keyboard_json(
+                min_score=current.min_ai_score,
+                min_budget=current.min_budget,
+            ),
+        )
+
+    async def show_quiet_settings() -> None:
+        current = project_filters.settings()
+        enabled = current.quiet_start is not None and current.quiet_end is not None
+        schedule = (
+            f"с {current.quiet_start:02d}:00 до {current.quiet_end:02d}:00 (МСК+2)"
+            if enabled
+            else "выключены"
+        )
+        await show_notice(
+            "🌙 Тихие часы\n\n"
+            f"Сейчас: {schedule}.\n\n"
+            "Во время тихих часов новые проекты остаются в очереди и отправляются позже, "
+            "если им ещё нет 24 часов.",
+            quiet_settings_keyboard_json(enabled=enabled),
+        )
+
+    async def show_filter_editor(name: str) -> None:
+        current = project_filters.settings()
+        instructions = {
+            "score": (
+                f"Текущий минимальный AI-балл: {current.min_ai_score}\n\n"
+                "Отправьте, например: /score 75"
+            ),
+            "budget": (
+                f"Текущий минимальный бюджет: {current.min_budget} ₽\n\n"
+                "Отправьте, например: /budget 10000\nДля отключения: /budget 0"
+            ),
+            "include": (
+                "Текущие желательные слова: "
+                f"{', '.join(current.include_keywords) or 'не заданы'}\n\n"
+                "Отправьте: /include figma, tilda, интернет-магазин\n"
+                "Для очистки: /include off"
+            ),
+            "exclude": (
+                "Текущие исключающие слова: "
+                f"{', '.join(current.exclude_keywords) or 'не заданы'}\n\n"
+                "Отправьте: /exclude wordpress, seo, парсинг\n"
+                "Для очистки: /exclude off"
+            ),
+            "quiet": (
+                "Отправьте часы начала и конца по МСК+2, например: /quiet 23 8\n"
+                "Для отключения: /quiet off"
+            ),
+        }
+        keyboard = (
+            quiet_settings_keyboard_json(enabled=current.quiet_start is not None)
+            if name == "quiet"
+            else filter_settings_keyboard_json(
+                min_score=current.min_ai_score,
+                min_budget=current.min_budget,
+            )
+        )
+        await show_notice(f"✏️ Изменение настройки\n\n{instructions[name]}", keyboard)
 
     async def show_config_texts() -> None:
         await show_notice(
@@ -403,6 +517,54 @@ async def _listen_for_commands(
 
     async def handle(event: BotCommand) -> None:
         command = event.name
+        if command == COMMAND_SOURCE_SETTINGS:
+            await show_sources()
+            return
+        if command == COMMAND_FILTER_SETTINGS:
+            await show_filter_settings()
+            return
+        if command == COMMAND_QUIET_SETTINGS:
+            await show_quiet_settings()
+            return
+        if command == COMMAND_EDIT_FILTER:
+            if event.filter_name is None:
+                await show_filter_settings()
+            else:
+                await show_filter_editor(event.filter_name)
+            return
+        if command == COMMAND_UPDATE_FILTER:
+            try:
+                value = (event.content or "").strip()
+                if event.filter_name == "score":
+                    project_filters.set_min_ai_score(int(value))
+                    if advisor is not None:
+                        advisor.set_min_score(int(value))
+                elif event.filter_name == "budget":
+                    normalized = value.replace(" ", "")
+                    project_filters.set_min_budget(0 if normalized == "off" else int(normalized))
+                elif event.filter_name in {"include", "exclude"}:
+                    project_filters.set_keywords(
+                        event.filter_name,
+                        "" if value.casefold() in {"off", "нет", "-"} else value,
+                    )
+                elif event.filter_name == "quiet":
+                    if value.casefold() in {"off", "нет", "-"}:
+                        project_filters.set_quiet_hours(None, None)
+                    else:
+                        hours = [int(part) for part in value.replace(":", " ").split()]
+                        if len(hours) != 2:
+                            raise ValueError("Используйте формат /quiet 23 8")
+                        project_filters.set_quiet_hours(hours[0], hours[1])
+                else:
+                    raise ValueError("Неизвестная настройка фильтра")
+            except (ValueError, TypeError) as error:
+                await show_notice(f"⚠️ {error}", settings_keyboard_json())
+                return
+            if event.filter_name == "quiet":
+                await show_quiet_settings()
+            else:
+                await show_filter_settings()
+            return
         if command == COMMAND_CONFIG_TEXTS:
             await show_config_texts()
             return
@@ -583,11 +745,7 @@ async def _listen_for_commands(
                 LOGGER.exception("Не удалось очистить сообщения бота в VK")
                 await bot.send_text(
                     "⚠️ Не удалось очистить чат. Попробуйте ещё раз.",
-                    keyboard=settings_keyboard_json(
-                        kwork_enabled=store.notifications_enabled("Kwork"),
-                        fl_enabled=store.notifications_enabled("FL.ru"),
-                        profi_enabled=store.notifications_enabled("Profi.ru"),
-                    ),
+                    keyboard=settings_keyboard_json(),
                 )
                 return
             result = f"✅ Удалено сообщений бота: {deleted}."
@@ -627,7 +785,7 @@ async def _listen_for_commands(
                 COMMAND_TOGGLE_PROFI: "Profi.ru",
             }[command]
             store.toggle_notifications(source)
-            await show_settings()
+            await show_sources()
             return
         if command not in {COMMAND_KWORK, COMMAND_FL, COMMAND_PROFI}:
             return
@@ -687,6 +845,7 @@ async def _listen_for_commands(
                 candidates,
                 store,
                 advisor,
+                project_filters=project_filters,
             )
             if not selected:
                 await show_notice(
@@ -710,6 +869,7 @@ async def run(settings: Settings) -> None:
     timeout = aiohttp.ClientTimeout(total=45)
     headers = {"User-Agent": "Mozilla/5.0 (compatible; FreelanceCategoryNotifier/1.0)"}
     store = ProjectStore(settings.database_path)
+    project_filters = ProjectFilterManager(store, default_ai_score=settings.ai_min_score)
     kwork_source = KworkSource(settings.kwork_login, settings.kwork_password)
     advisor: GigaChatProjectAdvisor | None = None
     config_texts = ConfigTextManager(
@@ -732,11 +892,12 @@ async def run(settings: Settings) -> None:
                 min_score=settings.ai_min_score,
             )
             await advisor.__aenter__()
+            advisor.set_min_score(project_filters.settings().min_ai_score)
             LOGGER.info(
                 "AI включён: фильтр=%s, отклики=%s, порог=%d",
                 settings.gigachat_filter_model,
                 settings.gigachat_response_model,
-                settings.ai_min_score,
+                project_filters.settings().min_ai_score,
             )
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             fl_source = FlSource(session)
@@ -795,6 +956,7 @@ async def run(settings: Settings) -> None:
                     profi_lock,
                     bot,
                     advisor,
+                    project_filters,
                 ),
                 _listen_for_commands(
                     bot,
@@ -807,6 +969,7 @@ async def run(settings: Settings) -> None:
                     profi_lock,
                     advisor,
                     config_texts,
+                    project_filters,
                 ),
             )
     finally:

@@ -36,7 +36,13 @@ COMMAND_CONFIG_TEXTS = "config_texts"
 COMMAND_VIEW_CONFIG_TEXT = "view_config_text"
 COMMAND_SET_CONFIG_TEXT = "set_config_text"
 COMMAND_REWRITE_RESPONSE = "rewrite_response"
+COMMAND_SOURCE_SETTINGS = "source_settings"
+COMMAND_FILTER_SETTINGS = "filter_settings"
+COMMAND_QUIET_SETTINGS = "quiet_settings"
+COMMAND_EDIT_FILTER = "edit_filter"
+COMMAND_UPDATE_FILTER = "update_filter"
 RESPONSE_ACTIONS = {"different", "shorter", "formal", "friendly", "question"}
+FILTER_NAMES = {"score", "budget", "include", "exclude", "quiet"}
 DISPLAY_TZ = timezone(timedelta(hours=5))
 ALL_COMMANDS = {
     COMMAND_KWORK,
@@ -62,6 +68,11 @@ ALL_COMMANDS = {
     COMMAND_VIEW_CONFIG_TEXT,
     COMMAND_SET_CONFIG_TEXT,
     COMMAND_REWRITE_RESPONSE,
+    COMMAND_SOURCE_SETTINGS,
+    COMMAND_FILTER_SETTINGS,
+    COMMAND_QUIET_SETTINGS,
+    COMMAND_EDIT_FILTER,
+    COMMAND_UPDATE_FILTER,
 }
 
 
@@ -77,6 +88,7 @@ class BotCommand:
     document_url: str | None = None
     document_name: str | None = None
     response_action: str | None = None
+    filter_name: str | None = None
 
 
 class VkApiError(RuntimeError):
@@ -291,7 +303,38 @@ def response_detail_keyboard_json(project_key: str) -> str:
     return json.dumps(keyboard, ensure_ascii=False, separators=(",", ":"))
 
 
-def settings_keyboard_json(*, kwork_enabled: bool, fl_enabled: bool, profi_enabled: bool) -> str:
+def settings_keyboard_json() -> str:
+    def button(label: str, command: str, color: str = "secondary") -> dict[str, Any]:
+        return {
+            "action": {
+                "type": "callback",
+                "label": label,
+                "payload": json.dumps({"command": command}, ensure_ascii=False),
+            },
+            "color": color,
+        }
+
+    return json.dumps(
+        {
+            "one_time": False,
+            "inline": False,
+            "buttons": [
+                [button("🔔 Источники уведомлений", COMMAND_SOURCE_SETTINGS)],
+                [button("🎯 Фильтры проектов", COMMAND_FILTER_SETTINGS)],
+                [button("🌙 Тихие часы", COMMAND_QUIET_SETTINGS)],
+                [button("📝 AI-тексты", COMMAND_CONFIG_TEXTS)],
+                [button("🗑 Очистить чат", COMMAND_CLEAR_CHAT, "negative")],
+                [button("← Главное меню", COMMAND_MENU)],
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def source_settings_keyboard_json(
+    *, kwork_enabled: bool, fl_enabled: bool, profi_enabled: bool
+) -> str:
     def toggle(label: str, command: str, enabled: bool) -> dict[str, Any]:
         status = "✅ вкл" if enabled else "⛔ выкл"
         return {
@@ -306,24 +349,8 @@ def settings_keyboard_json(*, kwork_enabled: bool, fl_enabled: bool, profi_enabl
     back = {
         "action": {
             "type": "callback",
-            "label": "← Главное меню",
-            "payload": json.dumps({"command": COMMAND_MENU}, ensure_ascii=False),
-        },
-        "color": "secondary",
-    }
-    clear_chat = {
-        "action": {
-            "type": "callback",
-            "label": "🗑 Очистить чат",
-            "payload": json.dumps({"command": COMMAND_CLEAR_CHAT}, ensure_ascii=False),
-        },
-        "color": "negative",
-    }
-    config_texts = {
-        "action": {
-            "type": "callback",
-            "label": "📝 AI-тексты",
-            "payload": json.dumps({"command": COMMAND_CONFIG_TEXTS}, ensure_ascii=False),
+            "label": "← К настройкам",
+            "payload": json.dumps({"command": COMMAND_SETTINGS}, ensure_ascii=False),
         },
         "color": "secondary",
     }
@@ -334,12 +361,89 @@ def settings_keyboard_json(*, kwork_enabled: bool, fl_enabled: bool, profi_enabl
             [toggle("Kwork", COMMAND_TOGGLE_KWORK, kwork_enabled)],
             [toggle("FL.ru", COMMAND_TOGGLE_FL, fl_enabled)],
             [toggle("Profi.ru", COMMAND_TOGGLE_PROFI, profi_enabled)],
-            [clear_chat],
-            [config_texts],
             [back],
         ],
     }
     return json.dumps(keyboard, ensure_ascii=False, separators=(",", ":"))
+
+
+def filter_settings_keyboard_json(*, min_score: int, min_budget: int) -> str:
+    def button(label: str, name: str) -> dict[str, Any]:
+        return {
+            "action": {
+                "type": "callback",
+                "label": label,
+                "payload": json.dumps(
+                    {"command": COMMAND_EDIT_FILTER, "filter_name": name},
+                    ensure_ascii=False,
+                ),
+            },
+            "color": "secondary",
+        }
+
+    back = {
+        "action": {
+            "type": "callback",
+            "label": "← К настройкам",
+            "payload": json.dumps({"command": COMMAND_SETTINGS}, ensure_ascii=False),
+        },
+        "color": "secondary",
+    }
+    budget = f"{min_budget:,} ₽".replace(",", " ") if min_budget else "выключен"
+    return json.dumps(
+        {
+            "one_time": False,
+            "inline": False,
+            "buttons": [
+                [button(f"🎯 AI-балл: {min_score}", "score")],
+                [button(f"💰 Мин. бюджет: {budget}", "budget")],
+                [button("➕ Желательные слова", "include")],
+                [button("🚫 Исключающие слова", "exclude")],
+                [back],
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def quiet_settings_keyboard_json(*, enabled: bool) -> str:
+    label = "🌙 Изменить расписание" if enabled else "🌙 Настроить тихие часы"
+    return json.dumps(
+        {
+            "one_time": False,
+            "inline": False,
+            "buttons": [
+                [
+                    {
+                        "action": {
+                            "type": "callback",
+                            "label": label,
+                            "payload": json.dumps(
+                                {"command": COMMAND_EDIT_FILTER, "filter_name": "quiet"},
+                                ensure_ascii=False,
+                            ),
+                        },
+                        "color": "secondary",
+                    }
+                ],
+                [
+                    {
+                        "action": {
+                            "type": "callback",
+                            "label": "← К настройкам",
+                            "payload": json.dumps(
+                                {"command": COMMAND_SETTINGS}, ensure_ascii=False
+                            ),
+                        },
+                        "color": "secondary",
+                    }
+                ],
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def config_texts_keyboard_json() -> str:
@@ -360,7 +464,16 @@ def config_texts_keyboard_json() -> str:
         [button("👤 Профиль исполнителя", "profile")],
         [button("🔎 Промпт отбора", "filter")],
         [button("✍ Промпт отклика", "response")],
-        json.loads(back_keyboard_json())["buttons"][0],
+        [
+            {
+                "action": {
+                    "type": "callback",
+                    "label": "← К настройкам",
+                    "payload": json.dumps({"command": COMMAND_SETTINGS}, ensure_ascii=False),
+                },
+                "color": "secondary",
+            }
+        ],
     ]
     return json.dumps(
         {"one_time": False, "inline": False, "buttons": buttons},
@@ -459,6 +572,7 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
             project_key = payload.get("project_key")
             config_key = payload.get("config_key")
             response_action = payload.get("response_action")
+            filter_name = payload.get("filter_name")
             return BotCommand(
                 str(command),
                 str(project_key) if isinstance(project_key, str) and project_key else None,
@@ -473,6 +587,7 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
                 response_action=(
                     str(response_action) if response_action in RESPONSE_ACTIONS else None
                 ),
+                filter_name=str(filter_name) if filter_name in FILTER_NAMES else None,
             )
 
     original_text = str(message.get("text", "")).strip()
@@ -513,6 +628,26 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
             document_url=document_url,
             document_name=document_name,
         )
+    filter_commands = {
+        "/score": "score",
+        "/budget": "budget",
+        "/include": "include",
+        "/exclude": "exclude",
+        "/quiet": "quiet",
+    }
+    command_token = first_line.strip().casefold().split(maxsplit=1)[0] if first_line.strip() else ""
+    if command_token in filter_commands:
+        inline_value = first_line.strip()[len(command_token) :].strip()
+        value = body.strip() or inline_value
+        return BotCommand(
+            COMMAND_UPDATE_FILTER,
+            peer_id=int(message["peer_id"]) if message.get("peer_id") is not None else None,
+            conversation_message_id=int(message["conversation_message_id"])
+            if message.get("conversation_message_id") is not None
+            else None,
+            content=value,
+            filter_name=filter_commands[command_token],
+        )
     text_commands = {
         "последние 5 kwork": COMMAND_KWORK,
         "последние 5 fl.ru": COMMAND_FL,
@@ -526,6 +661,8 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
         "статистика": COMMAND_STATISTICS,
         "отклики": COMMAND_RESPONSES,
         "последние проекты": COMMAND_RECENT,
+        "/filters": COMMAND_FILTER_SETTINGS,
+        "/sources": COMMAND_SOURCE_SETTINGS,
     }
     command = text_commands.get(text)
     return (

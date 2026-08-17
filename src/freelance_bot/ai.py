@@ -177,6 +177,11 @@ class GigaChatProjectAdvisor:
             raise ValueError("Неизвестный AI-текст") from error
         setattr(self, attribute, value)
 
+    def set_min_score(self, value: int) -> None:
+        if not 0 <= value <= 100:
+            raise ValueError("AI-балл должен быть от 0 до 100")
+        self._min_score = value
+
     @classmethod
     def from_paths(
         cls,
