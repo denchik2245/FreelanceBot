@@ -26,6 +26,7 @@ from freelance_bot.vk import (
     COMMAND_PROFI,
     COMMAND_RECENT,
     COMMAND_REJECTED,
+    COMMAND_REWRITE_RESPONSE,
     COMMAND_RESPONDED,
     COMMAND_RESPONSE_PROJECT,
     COMMAND_RESPONSES,
@@ -46,6 +47,7 @@ from freelance_bot.vk import (
     project_keyboard_json,
     recent_keyboard_json,
     response_detail_keyboard_json,
+    response_variants_keyboard_json,
     responses_keyboard_json,
     settings_keyboard_json,
     statistics_keyboard_json,
@@ -308,6 +310,7 @@ async def _listen_for_commands(
     config_texts: ConfigTextManager,
 ) -> None:
     command_lock = asyncio.Lock()
+    response_lock = asyncio.Lock()
 
     async def edit_project_message(event: BotCommand, message: str, keyboard: str) -> None:
         if event.event_id is not None and event.conversation_message_id is not None:
@@ -443,8 +446,13 @@ async def _listen_for_commands(
                 config_texts_keyboard_json(),
             )
             return
-        if command == COMMAND_WRITE_RESPONSE:
+        if command in {COMMAND_WRITE_RESPONSE, COMMAND_REWRITE_RESPONSE}:
             if event.project_key is None:
+                return
+            if response_lock.locked():
+                await bot.send_text(
+                    "⏳ Предыдущий вариант отклика ещё создаётся.", keyboard=False
+                )
                 return
             project = store.get_project(event.project_key)
             if project is None:
@@ -459,34 +467,66 @@ async def _listen_for_commands(
                 )
                 return
             project = await refresh_project_description(project)
-            try:
-                if assessment is None:
-                    try:
-                        assessment = await advisor.assess(project)
-                        store.remember_ai_assessment(assessment)
-                    except Exception:
-                        LOGGER.warning(
-                            "AI-оценка %s недоступна; пишу отклик без неё",
-                            project.key,
-                            exc_info=True,
-                        )
-                response_text = await advisor.generate_response(
-                    project,
-                    previous_response=store.get_ai_response(project.key),
-                )
-                store.remember_ai_response(
-                    project.key,
-                    response_text,
-                    advisor.response_model,
-                )
-            except Exception:
-                LOGGER.exception("Не удалось создать AI-отклик для %s", project.key)
+            previous_response = store.get_ai_response(project.key)
+            if command == COMMAND_REWRITE_RESPONSE and (
+                not previous_response or event.response_action is None
+            ):
                 await bot.send_text(
-                    "⚠️ Не удалось написать отклик. Попробуйте нажать кнопку ещё раз.",
+                    "⚠️ Исходный отклик не найден. Создайте его заново из карточки проекта.",
                     keyboard=False,
                 )
                 return
-            await bot.send_text(response_text, keyboard=False)
+            async with response_lock:
+                try:
+                    if command == COMMAND_WRITE_RESPONSE and assessment is None:
+                        try:
+                            assessment = await advisor.assess(project)
+                            store.remember_ai_assessment(assessment)
+                        except Exception:
+                            LOGGER.warning(
+                                "AI-оценка %s недоступна; пишу отклик без неё",
+                                project.key,
+                                exc_info=True,
+                            )
+                    response_text = await advisor.generate_response(
+                        project,
+                        previous_response=previous_response,
+                        variation=(
+                            event.response_action
+                            if command == COMMAND_REWRITE_RESPONSE
+                            else None
+                        ),
+                    )
+                    store.remember_ai_response(
+                        project.key,
+                        response_text,
+                        advisor.response_model,
+                    )
+                except Exception:
+                    LOGGER.exception("Не удалось создать AI-отклик для %s", project.key)
+                    await bot.send_text(
+                        "⚠️ Не удалось написать отклик. Попробуйте нажать кнопку ещё раз.",
+                        keyboard=False,
+                    )
+                    return
+            variants_keyboard = response_variants_keyboard_json(project.key)
+            if (
+                command == COMMAND_REWRITE_RESPONSE
+                and event.event_id is not None
+                and event.conversation_message_id is not None
+            ):
+                try:
+                    await bot.edit_text(
+                        event.conversation_message_id,
+                        response_text,
+                        keyboard=variants_keyboard,
+                    )
+                    return
+                except Exception:
+                    LOGGER.warning(
+                        "Не удалось заменить сообщение с AI-откликом", exc_info=True
+                    )
+            await bot.send_text(response_text, keyboard=variants_keyboard)
             return
         if command in {COMMAND_RESPONDED, COMMAND_REJECTED}:
             if event.project_key is None:

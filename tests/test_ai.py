@@ -145,6 +145,33 @@ async def test_advisor_generates_response_on_demand() -> None:
 
 
 @pytest.mark.asyncio
+async def test_advisor_rewrites_response_with_selected_style() -> None:
+    advisor, _, response_client = _advisor(25)
+
+    await advisor.generate_response(
+        _project(),
+        previous_response="Здравствуйте! Готов обсудить проект подробно.",
+        variation="shorter",
+    )
+
+    system_prompt = response_client.requests[0].messages[0].content
+    assert "заметно короче" in system_prompt
+    assert "верни только готовый отклик" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_advisor_rejects_unknown_response_variation() -> None:
+    advisor, _, _ = _advisor(25)
+
+    with pytest.raises(ValueError, match="Неизвестный вариант"):
+        await advisor.generate_response(
+            _project(),
+            previous_response="Предыдущий отклик",
+            variation="sarcastic",
+        )
+
+
+@pytest.mark.asyncio
 async def test_advisor_retries_invalid_gigachat_response(monkeypatch: pytest.MonkeyPatch) -> None:
     advisor, filter_client, _ = _advisor(85)
     filter_client.responses.insert(0, RuntimeError("пустой ответ"))

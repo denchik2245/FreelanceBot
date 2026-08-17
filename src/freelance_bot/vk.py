@@ -35,6 +35,8 @@ COMMAND_RESPONSE_PROJECT = "response_project"
 COMMAND_CONFIG_TEXTS = "config_texts"
 COMMAND_VIEW_CONFIG_TEXT = "view_config_text"
 COMMAND_SET_CONFIG_TEXT = "set_config_text"
+COMMAND_REWRITE_RESPONSE = "rewrite_response"
+RESPONSE_ACTIONS = {"different", "shorter", "formal", "friendly", "question"}
 DISPLAY_TZ = timezone(timedelta(hours=5))
 ALL_COMMANDS = {
     COMMAND_KWORK,
@@ -59,6 +61,7 @@ ALL_COMMANDS = {
     COMMAND_CONFIG_TEXTS,
     COMMAND_VIEW_CONFIG_TEXT,
     COMMAND_SET_CONFIG_TEXT,
+    COMMAND_REWRITE_RESPONSE,
 }
 
 
@@ -73,6 +76,7 @@ class BotCommand:
     content: str | None = None
     document_url: str | None = None
     document_name: str | None = None
+    response_action: str | None = None
 
 
 class VkApiError(RuntimeError):
@@ -201,6 +205,39 @@ def project_keyboard_json(project_key: str, decision: str | None = None) -> str:
                     ),
                 ],
                 [button("✍ Написать отклик", COMMAND_WRITE_RESPONSE, "primary")],
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def response_variants_keyboard_json(project_key: str) -> str:
+    def button(label: str, action: str) -> dict[str, Any]:
+        return {
+            "action": {
+                "type": "callback",
+                "label": label,
+                "payload": json.dumps(
+                    {
+                        "command": COMMAND_REWRITE_RESPONSE,
+                        "project_key": project_key,
+                        "response_action": action,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+            "color": "secondary",
+        }
+
+    return json.dumps(
+        {
+            "one_time": False,
+            "inline": True,
+            "buttons": [
+                [button("🔄 Другой вариант", "different"), button("✂ Короче", "shorter")],
+                [button("💼 Деловой", "formal"), button("🙂 Более живой", "friendly")],
+                [button("❓ Добавить вопрос", "question")],
             ],
         },
         ensure_ascii=False,
@@ -421,6 +458,7 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
         if command in ALL_COMMANDS:
             project_key = payload.get("project_key")
             config_key = payload.get("config_key")
+            response_action = payload.get("response_action")
             return BotCommand(
                 str(command),
                 str(project_key) if isinstance(project_key, str) and project_key else None,
@@ -429,7 +467,12 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
                 if message.get("conversation_message_id") is not None
                 else None,
                 str(message["event_id"]) if message.get("event_id") else None,
-                config_key=str(config_key) if config_key in {"profile", "filter", "response"} else None,
+                config_key=(
+                    str(config_key) if config_key in {"profile", "filter", "response"} else None
+                ),
+                response_action=(
+                    str(response_action) if response_action in RESPONSE_ACTIONS else None
+                ),
             )
 
     original_text = str(message.get("text", "")).strip()

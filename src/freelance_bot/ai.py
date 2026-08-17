@@ -287,16 +287,51 @@ class GigaChatProjectAdvisor:
         )
         return assessment
 
-    async def generate_response(self, project: Project, *, previous_response: str = "") -> str:
+    async def generate_response(
+        self,
+        project: Project,
+        *,
+        previous_response: str = "",
+        variation: str | None = None,
+    ) -> str:
         system_content = f"{self._response_prompt}\n\nПРОФИЛЬ ИСПОЛНИТЕЛЯ:\n{self._profile}"
         user_content = _project_context(project)
         if previous_response:
+            instructions = {
+                None: (
+                    "Создай заметно другой вариант: измени формулировки и хотя бы один из "
+                    "акцентов, идей или следующих шагов."
+                ),
+                "different": (
+                    "Создай заметно другой вариант: измени формулировки и хотя бы один из "
+                    "акцентов, идей или следующих шагов."
+                ),
+                "shorter": (
+                    "Перепиши отклик заметно короче. Сохрани главные аргументы и конкретику, "
+                    "убери повторы и второстепенные детали."
+                ),
+                "formal": (
+                    "Перепиши отклик в более деловом, уверенном и сдержанном стиле без канцелярита."
+                ),
+                "friendly": (
+                    "Перепиши отклик более живо, тепло и естественно, но без фамильярности."
+                ),
+                "question": (
+                    "Улучши отклик и добавь ближе к концу ровно один уместный вопрос клиенту, "
+                    "который поможет уточнить задачу и начать диалог."
+                ),
+            }
+            try:
+                revision_instruction = instructions[variation]
+            except KeyError as error:
+                raise ValueError("Неизвестный вариант изменения отклика") from error
             system_content += (
-                "\n\nЭто повторная генерация. Предыдущий отклик дан только для сравнения. "
-                "Создай заметно другой вариант: измени формулировки и хотя бы один из акцентов, "
-                "идей или следующих шагов. Не комментируй различия."
+                "\n\nЭто повторная генерация. Предыдущий отклик дан как основа для правки. "
+                f"{revision_instruction} Не комментируй изменения и верни только готовый отклик."
             )
             user_content += f"\n\nПРЕДЫДУЩИЙ ОТКЛИК:\n{previous_response}"
+        elif variation is not None:
+            raise ValueError("Нельзя изменить ещё не созданный отклик")
         response_request = Chat(
             model=self._response_model,
             temperature=0.5,

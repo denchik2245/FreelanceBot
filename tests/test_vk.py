@@ -10,6 +10,7 @@ from freelance_bot.vk import (
     COMMAND_FL,
     COMMAND_KWORK,
     COMMAND_RECENT,
+    COMMAND_REWRITE_RESPONSE,
     COMMAND_RESPONDED,
     COMMAND_SETTINGS,
     COMMAND_SET_CONFIG_TEXT,
@@ -21,6 +22,7 @@ from freelance_bot.vk import (
     parse_command,
     project_keyboard_json,
     recent_keyboard_json,
+    response_variants_keyboard_json,
     settings_keyboard_json,
     statistics_keyboard_json,
 )
@@ -123,6 +125,32 @@ def test_project_decision_changes_button_state() -> None:
     write_response = json.loads(project_keyboard_json("Kwork:123"))["buttons"][1][0]
     assert write_response["action"]["label"] == "✍ Написать отклик"
     assert write_response["color"] == "primary"
+
+
+def test_generated_response_keyboard_has_revision_actions() -> None:
+    keyboard = json.loads(response_variants_keyboard_json("Kwork:123"))
+    buttons = [button for row in keyboard["buttons"] for button in row]
+    labels = [button["action"]["label"] for button in buttons]
+
+    assert keyboard["inline"] is True
+    assert labels == [
+        "🔄 Другой вариант",
+        "✂ Короче",
+        "💼 Деловой",
+        "🙂 Более живой",
+        "❓ Добавить вопрос",
+    ]
+    event = parse_command(
+        {
+            "payload": buttons[1]["action"]["payload"],
+            "conversation_message_id": 55,
+            "event_id": "event-2",
+        }
+    )
+    assert event is not None
+    assert event.name == COMMAND_REWRITE_RESPONSE
+    assert event.project_key == "Kwork:123"
+    assert event.response_action == "shorter"
 
 
 def test_project_message_uses_compact_format_and_display_timezone() -> None:
