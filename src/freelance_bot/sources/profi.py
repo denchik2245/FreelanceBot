@@ -1,9 +1,11 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
@@ -458,10 +460,19 @@ def _is_auth_graphql_error(errors: Any) -> bool:
 
 
 class ProfiSource:
-    def __init__(self, session: aiohttp.ClientSession, login: str, password: str) -> None:
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        login: str,
+        password: str,
+        *,
+        storage_state_path: Path | str | None = None,
+    ) -> None:
         self._session = session
         self._login = login
         self._password = password
+        self._storage_state_path = Path(storage_state_path) if storage_state_path else None
+        self._browser_storage_state: dict[str, Any] | None = None
         self._authenticated = False
         self._auth_flow_id = str(uuid4())
         self._auth_failures = 0
@@ -526,9 +537,11 @@ class ProfiSource:
                 headless=True,
                 args=["--disable-dev-shm-usage"],
             )
-            self._browser_context = await self._browser.new_context(
-                locale="ru-RU",
-            )
+            storage_state = self._browser_storage_state or self._load_browser_storage_state()
+            context_options: dict[str, Any] = {"locale": "ru-RU"}
+            if storage_state is not None:
+                context_options["storage_state"] = storage_state
+            self._browser_context = await self._browser.new_context(**context_options)
             page = await self._browser_context.new_page()
             await page.goto(
                 f"{BASE_URL}/backoffice/",
@@ -540,10 +553,54 @@ class ProfiSource:
                 timeout=BROWSER_CHALLENGE_TIMEOUT_SECONDS * 1000,
             )
             self._browser_page = page
+            self._authenticated = storage_state is not None
             LOGGER.info("Profi.ru: браузерная сессия подготовлена")
         except BaseException:
             await self._close_browser()
             raise
+
+    def _load_browser_storage_state(self) -> dict[str, Any] | None:
+        path = self._storage_state_path
+        if path is None or not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            LOGGER.warning("Profi.ru: не удалось прочитать сохранённую браузерную сессию")
+            return None
+        if not isinstance(payload, dict):
+            LOGGER.warning("Profi.ru: сохранённая браузерная сессия имеет неверный формат")
+            return None
+        self._browser_storage_state = payload
+        return payload
+
+    async def _save_browser_storage_state(self) -> None:
+        context = self._browser_context
+        if context is None:
+            return
+        try:
+            payload = await context.storage_state()
+        except Exception:  # noqa: BLE001 - a snapshot failure must not stop polling
+            LOGGER.warning("Profi.ru: не удалось получить состояние браузерной сессии")
+            return
+        if not isinstance(payload, dict):
+            LOGGER.warning("Profi.ru: браузер вернул неверный формат состояния сессии")
+            return
+        self._browser_storage_state = payload
+        path = self._storage_state_path
+        if path is None:
+            return
+        temporary = path.with_name(f"{path.name}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+                json.dump(payload, file, ensure_ascii=False, separators=(",", ":"))
+            os.replace(temporary, path)
+            os.chmod(path, 0o600)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            LOGGER.warning("Profi.ru: не удалось сохранить браузерную сессию")
 
     async def _graphql(
         self,
@@ -763,6 +820,7 @@ class ProfiSource:
                     self._record_auth_failure(error)
                     raise
         # A login response alone doesn't prove access to the protected board.
+        await self._save_browser_storage_state()
         self._auth_failures = 0
         self._next_auth_attempt_at = 0.0
         self._last_auth_error = ""

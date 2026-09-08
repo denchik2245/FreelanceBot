@@ -22,42 +22,42 @@ from freelance_bot.vk import (
     COMMAND_CLIENT_REPLIED,
     COMMAND_CONFIG_TEXTS,
     COMMAND_EDIT_FILTER,
-    COMMAND_FL,
     COMMAND_FILTER_SETTINGS,
+    COMMAND_FL,
     COMMAND_KWORK,
     COMMAND_MENU,
     COMMAND_PROFI,
     COMMAND_QUIET_SETTINGS,
     COMMAND_RECENT,
     COMMAND_REJECTED,
-    COMMAND_REWRITE_RESPONSE,
     COMMAND_RESPONDED,
     COMMAND_RESPONSE_PROJECT,
     COMMAND_RESPONSES,
+    COMMAND_REWRITE_RESPONSE,
+    COMMAND_SET_CONFIG_TEXT,
     COMMAND_SETTINGS,
     COMMAND_SOURCE_SETTINGS,
     COMMAND_STATISTICS,
     COMMAND_TOGGLE_FL,
     COMMAND_TOGGLE_KWORK,
     COMMAND_TOGGLE_PROFI,
-    COMMAND_SET_CONFIG_TEXT,
+    COMMAND_UPDATE_FILTER,
     COMMAND_VIEW_CONFIG_TEXT,
     COMMAND_WRITE_RESPONSE,
-    COMMAND_UPDATE_FILTER,
     DISPLAY_TZ,
     BotCommand,
     VkBot,
     config_texts_keyboard_json,
-    format_message,
     filter_settings_keyboard_json,
+    format_message,
     keyboard_json,
     project_keyboard_json,
+    quiet_settings_keyboard_json,
     recent_keyboard_json,
     response_detail_keyboard_json,
     response_variants_keyboard_json,
     responses_keyboard_json,
     settings_keyboard_json,
-    quiet_settings_keyboard_json,
     source_settings_keyboard_json,
     statistics_keyboard_json,
 )
@@ -903,7 +903,13 @@ async def run(settings: Settings) -> None:
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             fl_source = FlSource(session)
             profi_source = (
-                ProfiSource(session, settings.profi_login, settings.profi_password)
+                ProfiSource(
+                    session,
+                    settings.profi_login,
+                    settings.profi_password,
+                    storage_state_path=settings.database_path.parent
+                    / "profi-storage-state.json",
+                )
                 if settings.profi_login and settings.profi_password
                 else None
             )

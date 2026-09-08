@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 import os
+from pathlib import Path
 
 import aiohttp
 from dotenv import load_dotenv
@@ -24,7 +25,14 @@ async def check(
     timeout = aiohttp.ClientTimeout(total=45)
     headers = {"User-Agent": "Mozilla/5.0 (compatible; FreelanceCategoryNotifier/1.0)"}
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        source = ProfiSource(session, login, password)
+        source = ProfiSource(
+            session,
+            login,
+            password,
+            storage_state_path=Path(
+                os.getenv("PROFI_STORAGE_STATE_PATH", "data/profi-storage-state.json")
+            ),
+        )
         try:
             projects = await source.fetch()
             print(f"Первичная загрузка: {len(projects)} карточек", flush=True)

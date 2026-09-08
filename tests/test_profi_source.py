@@ -249,6 +249,14 @@ def browser_runtime(monkeypatch):
     page.evaluate = AsyncMock(side_effect=evaluate)
     context = MagicMock()
     context.new_page = AsyncMock(return_value=page)
+    context.storage_state = AsyncMock(
+        return_value={
+            "cookies": [
+                {"name": "session", "value": "token", "domain": ".profi.ru", "path": "/"}
+            ],
+            "origins": [],
+        }
+    )
     context.close = AsyncMock()
     browser = MagicMock()
     browser.is_connected.return_value = True
@@ -294,7 +302,7 @@ async def test_manual_and_two_background_cycles_keep_live_browser(browser_runtim
 
 
 @pytest.mark.asyncio
-async def test_browser_crash_starts_new_session_and_logs_in(browser_runtime):
+async def test_browser_crash_starts_new_session_with_saved_auth(browser_runtime):
     runtime, browser, _context, page = browser_runtime
     source = ProfiSource(None, "login", "password")
     try:
@@ -309,9 +317,36 @@ async def test_browser_crash_starts_new_session_and_logs_in(browser_runtime):
             and isinstance(call.args[1], dict)
             and call.args[1]["query"] == AUTH_QUERY
         ]
-        assert len(auth_calls) == 2
+        assert len(auth_calls) == 1
+        assert browser.new_context.await_args_list[1].kwargs["storage_state"]["cookies"]
     finally:
         await source.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_auth_state_survives_source_restart(browser_runtime, tmp_path):
+    _runtime, browser, context, page = browser_runtime
+    state_path = tmp_path / "profi-storage-state.json"
+    first = ProfiSource(None, "login", "password", storage_state_path=state_path)
+    await first.fetch()
+    await first.close()
+
+    second = ProfiSource(None, "login", "password", storage_state_path=state_path)
+    try:
+        await second.fetch()
+        auth_calls = [
+            call
+            for call in page.evaluate.call_args_list
+            if len(call.args) > 1
+            and isinstance(call.args[1], dict)
+            and call.args[1]["query"] == AUTH_QUERY
+        ]
+        assert len(auth_calls) == 1
+        assert browser.new_context.await_args_list[1].kwargs["storage_state"]["cookies"]
+        assert json.loads(state_path.read_text(encoding="utf-8"))["cookies"]
+        assert context.storage_state.await_count >= 2
+    finally:
+        await second.close()
 
 
 @pytest.mark.asyncio
