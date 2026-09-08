@@ -1,13 +1,14 @@
 [project]
 name = "freelance-vk-bot"
 version = "0.1.0"
-description = "VK notifications for relevant Kwork and FL.ru projects from all categories"
+description = "VK notifications for relevant Kwork, FL.ru and Profi.ru projects"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.11,<4",
     "beautifulsoup4>=4.12,<5",
     "gigachat>=0.2.1,<0.3",
     "kwork>=0.2,<0.3",
+    "playwright>=1.50,<2",
     "python-dotenv>=1,<2",
 ]
 
@@ -21,6 +22,7 @@ dev = [
 [project.scripts]
 freelance-bot = "freelance_bot.main:main"
 gigachat-check = "freelance_bot.check_gigachat:main"
+profi-check = "freelance_bot.check_profi:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -36,4 +38,3 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-

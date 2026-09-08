@@ -553,7 +553,7 @@ class ProjectStore:
         started_at = started_at.replace(microsecond=started_at.microsecond // 1000 * 1000)
         self.set_state(
             "statistics_started_at",
-            started_at.strftime("%Y-%m-%d %H:%M:%S.%f"),
+            f"{started_at:%Y-%m-%d %H:%M:%S}.{started_at.microsecond // 1000:03d}",
         )
         return started_at
 

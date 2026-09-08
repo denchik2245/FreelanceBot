@@ -819,7 +819,7 @@ async def _listen_for_commands(
                 else:
                     assert profi_source is not None
                     async with profi_lock:
-                        projects = await profi_source.fetch()
+                        projects = await profi_source.fetch_for_manual_selection()
             except Exception:
                 LOGGER.exception("Ошибка тестовой выдачи %s", source_name)
                 await show_notice(
@@ -877,6 +877,7 @@ async def run(settings: Settings) -> None:
         filter_prompt_path=settings.ai_filter_prompt_path,
         response_prompt_path=settings.ai_response_prompt_path,
     )
+    profi_source: ProfiSource | None = None
     try:
         if settings.ai_enabled:
             advisor = GigaChatProjectAdvisor.from_paths(
@@ -973,6 +974,8 @@ async def run(settings: Settings) -> None:
                 ),
             )
     finally:
+        if profi_source is not None:
+            await profi_source.close()
         if advisor is not None:
             await advisor.__aexit__(None, None, None)
         await kwork_source.close()

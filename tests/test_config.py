@@ -43,3 +43,14 @@ def test_ai_rejects_empty_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ValueError, match="не могут быть пустыми"):
         Settings.from_env()
+
+
+def test_profi_credentials_must_be_configured_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("PROFI_LOGIN", "specialist")
+    monkeypatch.delenv("PROFI_PASSWORD", raising=False)
+
+    with pytest.raises(ValueError, match="должны быть заданы вместе"):
+        Settings.from_env()

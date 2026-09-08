@@ -58,6 +58,10 @@ class Settings:
         gigachat_response_model = os.getenv("GIGACHAT_RESPONSE_MODEL", "GigaChat-2-Max").strip()
         if ai_enabled and (not gigachat_filter_model or not gigachat_response_model):
             raise ValueError("AI-модели GigaChat не могут быть пустыми")
+        profi_login = os.getenv("PROFI_LOGIN", "").strip()
+        profi_password = os.getenv("PROFI_PASSWORD", "").strip()
+        if bool(profi_login) != bool(profi_password):
+            raise ValueError("PROFI_LOGIN и PROFI_PASSWORD должны быть заданы вместе")
         ca_bundle = os.getenv("GIGACHAT_CA_BUNDLE_FILE", "").strip()
         return cls(
             vk_group_token=_required("VK_GROUP_TOKEN"),
@@ -65,8 +69,8 @@ class Settings:
             vk_api_version=os.getenv("VK_API_VERSION", "5.199"),
             kwork_login=_required("KWORK_LOGIN"),
             kwork_password=_required("KWORK_PASSWORD"),
-            profi_login=os.getenv("PROFI_LOGIN", "").strip(),
-            profi_password=os.getenv("PROFI_PASSWORD", "").strip(),
+            profi_login=profi_login,
+            profi_password=profi_password,
             poll_interval_seconds=interval,
             database_path=Path(os.getenv("DATABASE_PATH", "data/bot.sqlite3")),
             send_existing_on_first_run=_bool("SEND_EXISTING_ON_FIRST_RUN"),
