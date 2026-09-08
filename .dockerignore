@@ -1,4 +1,6 @@
 .env
+.env.*
+playwright
 .git
 .venv
 .pytest_cache

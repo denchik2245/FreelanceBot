@@ -1,10 +1,11 @@
+import asyncio
 import json
 import logging
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
 import aiohttp
@@ -22,6 +23,7 @@ MAX_PROJECT_AGE = timedelta(hours=24)
 AUTH_RETRY_BASE_SECONDS = 300
 AUTH_RETRY_MAX_SECONDS = 3600
 BROWSER_CHALLENGE_TIMEOUT_SECONDS = 15
+BROWSER_REQUEST_TIMEOUT_SECONDS = 45
 
 HEADERS = {
     "Accept": "application/json",
@@ -36,13 +38,13 @@ HEADERS = {
     "x-new-auth-compatible": "1",
     "x-warp-consumer": "WEB",
     "x-warp-ui-type": "WEB",
-    "x-warp-ui-app": "BO",
+    "x-warp-ui-app": "WEBBO",
     "x-warp-ui-ver": "1.0",
     "Origin": BASE_URL,
     "Referer": f"{BASE_URL}/backoffice/",
 }
 
-AUTH_QUERY = """#prfrtkn:webbo:00feb1ab9d29a937aed5f99ad94a68e626b4f84e:a8b5cfc25504e5030a35c5e023c47e4700cc5c41
+AUTH_QUERY = """#prfrtkn:webbo:d8306f0cb9b3586cde92113791c8f7dc637e221b:40e91e7164ba105f5941f4dfa18139771a439e06
 
       query authStrategyStart($type: AuthStrategyType!, $initialState: AuthStrategyInitialState!) {
   authStrategyStart(type: $type, initialState: $initialState) {
@@ -101,6 +103,7 @@ AUTH_QUERY = """#prfrtkn:webbo:00feb1ab9d29a937aed5f99ad94a68e626b4f84e:a8b5cfc2
       }
       auth {
         loginUrl
+        redirectUrl
       }
       step {
         ...AuthStrategyStepVariant
@@ -426,9 +429,7 @@ def _graphql_error_message(errors: Any) -> str:
     if not isinstance(errors, list):
         return "GraphQL error"
     messages = [
-        str(error.get("message") or "GraphQL error")
-        for error in errors
-        if isinstance(error, dict)
+        str(error.get("message") or "GraphQL error") for error in errors if isinstance(error, dict)
     ]
     return "; ".join(messages) or "GraphQL error"
 
@@ -467,13 +468,51 @@ class ProfiSource:
         self._next_auth_attempt_at = 0.0
         self._last_auth_error = ""
         self._browser_page: Any | None = None
-        self._browser_storage_state: dict[str, Any] | None = None
+        self._browser: Any | None = None
+        self._browser_context: Any | None = None
+        self._playwright: Any | None = None
+        self._browser_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def _browser_session(self):
-        if self._browser_page is not None:
-            yield
+        # Manual requests and background polling share the *live* page, including
+        # its sessionStorage and token refresh scripts, not just a cookie snapshot.
+        async with self._browser_lock:
+            self._check_auth_backoff()
+            try:
+                await self._ensure_browser()
+                yield
+            except BaseException:
+                await self._close_browser()
+                raise
+
+    async def close(self) -> None:
+        async with self._browser_lock:
+            await self._close_browser()
+
+    async def _close_browser(self) -> None:
+        context, browser, playwright = (self._browser_context, self._browser, self._playwright)
+        self._browser_page = None
+        self._browser_context = None
+        self._browser = None
+        self._playwright = None
+        self._authenticated = False
+        for resource, method in ((context, "close"), (browser, "close"), (playwright, "stop")):
+            if resource is not None:
+                try:
+                    await getattr(resource, method)()
+                except Exception:  # noqa: BLE001 - finish cleanup without logging session data
+                    LOGGER.warning("Profi.ru: ошибка закрытия браузера")
+
+    async def _ensure_browser(self) -> None:
+        if (
+            self._browser is not None
+            and self._browser.is_connected()
+            and self._browser_page is not None
+            and not self._browser_page.is_closed()
+        ):
             return
+        await self._close_browser()
         try:
             from playwright.async_api import async_playwright
         except ImportError as error:
@@ -481,24 +520,16 @@ class ProfiSource:
                 "Для Profi.ru не установлен Playwright; пересоберите Docker-образ"
             ) from error
 
-        playwright = await async_playwright().start()
-        browser = None
-        context = None
+        self._playwright = await async_playwright().start()
         try:
-            browser = await playwright.chromium.launch(
+            self._browser = await self._playwright.chromium.launch(
                 headless=True,
                 args=["--disable-dev-shm-usage"],
             )
-            context_options: dict[str, Any] = {
-                "user_agent": HEADERS["User-Agent"],
-                "locale": "ru-RU",
-            }
-            if self._browser_storage_state is not None:
-                context_options["storage_state"] = self._browser_storage_state
-            context = await browser.new_context(
-                **context_options,
+            self._browser_context = await self._browser.new_context(
+                locale="ru-RU",
             )
-            page = await context.new_page()
+            page = await self._browser_context.new_page()
             await page.goto(
                 f"{BASE_URL}/backoffice/",
                 wait_until="domcontentloaded",
@@ -508,37 +539,11 @@ class ProfiSource:
                 "document.cookie.includes('prfr_q_val=')",
                 timeout=BROWSER_CHALLENGE_TIMEOUT_SECONDS * 1000,
             )
-            token_init = await page.evaluate(
-                """
-                async () => {
-                  const response = await fetch('/auth/token/init', {
-                    credentials: 'include',
-                    headers: {
-                      'x-new-auth-compatible': '1',
-                      'x-app-id': 'BO',
-                    },
-                  });
-                  return {status: response.status, body: await response.text()};
-                }
-                """
-            )
-            if int(token_init.get("status") or 0) != 200:
-                raise RuntimeError(
-                    f"Profi.ru auth/token/init вернул HTTP {token_init.get('status')}"
-                )
             self._browser_page = page
             LOGGER.info("Profi.ru: браузерная сессия подготовлена")
-            yield
-        finally:
-            if context is not None:
-                try:
-                    self._browser_storage_state = await context.storage_state()
-                except Exception:
-                    LOGGER.warning("Profi.ru: не удалось сохранить browser-state", exc_info=True)
-            self._browser_page = None
-            if browser is not None:
-                await browser.close()
-            await playwright.stop()
+        except BaseException:
+            await self._close_browser()
+            raise
 
     async def _graphql(
         self,
@@ -555,35 +560,37 @@ class ProfiSource:
         }
         request_headers.update(headers or {})
         request_headers["x-wtf-id"] = str(uuid4())
-        response = await self._browser_page.evaluate(
-            """
-            async ({url, query, variables, headers}) => {
-              const response = await fetch(url, {
-                method: 'POST',
-                credentials: 'include',
-                headers,
-                body: JSON.stringify({query, variables}),
-              });
-              return {
-                status: response.status,
-                body: await response.text(),
-              };
-            }
+        response = await asyncio.wait_for(
+            self._browser_page.evaluate(
+                """
+            ({url, query, variables, headers}) => new Promise((resolve, reject) => {
+              const xhr = new XMLHttpRequest();
+              xhr.open('POST', url);
+              xhr.withCredentials = true;
+              xhr.timeout = 40000;
+              for (const [key, value] of Object.entries(headers)) {
+                xhr.setRequestHeader(key, value);
+              }
+              xhr.onload = () => resolve({status: xhr.status, body: xhr.responseText});
+              xhr.onerror = () => reject(new Error('Profi.ru API network error'));
+              xhr.ontimeout = () => reject(new Error('Profi.ru API timeout'));
+              xhr.send(JSON.stringify({query, variables}));
+            });
             """,
-            {
-                "url": GRAPHQL_URL,
-                "query": query,
-                "variables": variables,
-                "headers": request_headers,
-            },
+                {
+                    "url": GRAPHQL_URL,
+                    "query": query,
+                    "variables": variables,
+                    "headers": request_headers,
+                },
+            ),
+            timeout=BROWSER_REQUEST_TIMEOUT_SECONDS,
         )
         status = int(response.get("status") or 0)
         body = str(response.get("body") or "")
         if status in {401, 403}:
-            details = " ".join(body.split())[:240]
-            suffix = f" ({details})" if details else ""
             raise ProfiAuthenticationError(
-                f"Profi.ru вернул HTTP {status}: требуется повторный вход{suffix}"
+                f"Profi.ru вернул HTTP {status}: требуется повторный вход"
             )
         if not 200 <= status < 300:
             raise RuntimeError(f"Profi.ru API вернул HTTP {status}")
@@ -592,7 +599,7 @@ class ProfiSource:
         except json.JSONDecodeError as error:
             raise RuntimeError("Profi.ru API вернул ответ не в формате JSON") from error
         if not isinstance(payload, dict):
-            raise RuntimeError("Profi.ru API вернул ответ неизвестного формата")
+            raise RuntimeError("Profi.ru API вернул ответ неизвестного формата")  # noqa: TRY004
         errors = payload.get("errors")
         if errors:
             message = _graphql_error_message(errors)
@@ -654,49 +661,112 @@ class ProfiSource:
                 "Profi.ru запросил SMS, captcha или другое подтверждение входа"
             )
         login_url = (result.get("auth") or {}).get("loginUrl")
-        if login_url:
-            assert self._browser_page is not None
-            await self._browser_page.goto(
-                urljoin(BASE_URL, str(login_url)),
-                wait_until="domcontentloaded",
-                timeout=BROWSER_CHALLENGE_TIMEOUT_SECONDS * 1000,
-            )
-        # Профиль `me` имеет разные GraphQL-типы для разных видов аккаунтов и
-        # поэтому не подходит для универсальной проверки входа. Успешность
-        # сессии подтверждает следующий защищённый запрос доски заказов; при
-        # 401/403 `_authorized_graphql` один раз выполнит повторный вход.
+        if not login_url:
+            raise ProfiAuthenticationError("Profi.ru не вернул адрес завершения входа")
+        await self._complete_login(str(login_url))
+        # Only a successful protected board request resets the failure backoff.
         self._authenticated = True
-        self._auth_failures = 0
-        self._next_auth_attempt_at = 0.0
-        self._last_auth_error = ""
         LOGGER.info("Profi.ru: авторизация выполнена")
 
-    async def _ensure_authenticated(self) -> None:
-        if self._authenticated:
-            return
+    async def _complete_login(self, login_url: str) -> None:
+        url = urljoin(BASE_URL, login_url)
+        if urlsplit(url).scheme != "https" or urlsplit(url).netloc != urlsplit(BASE_URL).netloc:
+            raise ProfiAuthenticationError("Profi.ru вернул неизвестный адрес завершения входа")
+        # The web client's LoginUrlCaller fetches loginUrl then /auth/token/touch.
+        # Navigating to loginUrl omits the app headers and never completes login.
+        await self._exchange_auth_tokens((url, f"{BASE_URL}/auth/token/touch"))
+
+    async def _exchange_auth_tokens(self, endpoints: tuple[str, ...]) -> None:
+        assert self._browser_page is not None
+        # Use the same XHR transport as the site's LoginUrlFetcher so the page's
+        # normal response handlers can update the browser session.
+        for endpoint in endpoints:
+            response = await asyncio.wait_for(
+                self._browser_page.evaluate(
+                    """
+                    async url => {
+                      for (let attempt = 0; attempt < 3; attempt++) {
+                        const response = await new Promise((resolve, reject) => {
+                          const xhr = new XMLHttpRequest();
+                          xhr.open('GET', url);
+                          xhr.withCredentials = true;
+                          xhr.timeout = 10000;
+                          const headers = {
+                            'x-new-auth-compatible': '1',
+                            'x-app-id': 'BO',
+                            'x-warp-consumer': 'WEB',
+                            'x-warp-ui-type': 'WEB',
+                            'x-warp-ui-app': 'WEBBO',
+                            'x-warp-ui-ver': '1.0',
+                          };
+                          for (const [key, value] of Object.entries(headers)) {
+                            xhr.setRequestHeader(key, value);
+                          }
+                          xhr.onload = () => resolve({status: xhr.status, body: xhr.responseText});
+                          xhr.onerror = () => reject(new Error('Profi.ru login network error'));
+                          xhr.ontimeout = () => reject(new Error('Profi.ru login timeout'));
+                          xhr.send();
+                        });
+                        let ok = false;
+                        try { ok = JSON.parse(response.body).result === 'ok'; } catch {}
+                        if (response.status !== 423 || attempt === 2) {
+                          return {status: response.status, ok};
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                      }
+                    }
+                    """,
+                    endpoint,
+                ),
+                timeout=BROWSER_REQUEST_TIMEOUT_SECONDS,
+            )
+            if response.get("status") != 200 or response.get("ok") is not True:
+                raise ProfiAuthenticationError(
+                    f"Profi.ru не завершил вход ({urlsplit(endpoint).path}, "
+                    f"HTTP {response.get('status')})"
+                )
+
+    def _check_auth_backoff(self) -> None:
         retry_after = self._next_auth_attempt_at - time.monotonic()
         if retry_after > 0:
             raise ProfiAuthenticationError(
                 f"повторный вход доступен через {retry_after:.0f} с: {self._last_auth_error}"
             )
+
+    async def _ensure_authenticated(self) -> None:
+        self._check_auth_backoff()
+        if self._authenticated:
+            return
         self._auth_flow_id = str(uuid4())
         try:
+            await self._exchange_auth_tokens((f"{BASE_URL}/auth/token/init",))
             await self._login_to_account()
         except ProfiAuthenticationError as error:
             self._record_auth_failure(error)
             raise
 
-    async def _authorized_graphql(
-        self, query: str, variables: dict[str, Any]
-    ) -> dict[str, Any]:
-        await self._ensure_authenticated()
-        try:
-            return await self._graphql(query, variables)
-        except ProfiAuthenticationError:
-            # Cookies кабинета истекли. Один раз обновляем сессию в этом же цикле.
-            self._authenticated = False
-            await self._ensure_authenticated()
-            return await self._graphql(query, variables)
+    async def _authorized_graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        self._check_auth_backoff()
+        login_attempts = 0
+        while True:
+            if not self._authenticated:
+                await self._ensure_authenticated()
+                login_attempts += 1
+            try:
+                payload = await self._graphql(query, variables)
+                break
+            except ProfiAuthenticationError as error:
+                self._authenticated = False
+                # Apply the same bounded login budget to a fresh session and to
+                # an expired one. An optimistic cached flag isn't a login attempt.
+                if login_attempts >= 2:
+                    self._record_auth_failure(error)
+                    raise
+        # A login response alone doesn't prove access to the protected board.
+        self._auth_failures = 0
+        self._next_auth_attempt_at = 0.0
+        self._last_auth_error = ""
+        return payload
 
     async def _fetch_projects(
         self,
@@ -720,6 +790,10 @@ class ProfiSource:
                     "sort": "DEFAULT",
                 },
             )
+            if not isinstance(payload.get("data"), dict) or not isinstance(
+                payload["data"].get("boSearchBoardItems"), dict
+            ):
+                raise RuntimeError("Profi.ru API не вернул доску заказов")  # noqa: TRY004
             page_projects = parse_projects(payload)
             for project in page_projects:
                 unique.setdefault(project.key, project)

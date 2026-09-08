@@ -1,4 +1,9 @@
 .env
+.env.*
+!.env.example
+playwright/.auth/
+data/profi-browser/
+data/profi-storage-state*.json
 .venv/
 __pycache__/
 .pytest_cache/

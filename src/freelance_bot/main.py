@@ -600,6 +600,7 @@ async def run(settings: Settings) -> None:
     store = ProjectStore(settings.database_path)
     kwork_source = KworkSource(settings.kwork_login, settings.kwork_password)
     advisor: GigaChatProjectAdvisor | None = None
+    profi_source: ProfiSource | None = None
     try:
         if settings.ai_enabled:
             advisor = GigaChatProjectAdvisor.from_paths(
@@ -666,32 +667,37 @@ async def run(settings: Settings) -> None:
                         "Не удалось установить постоянную клавиатуру VK",
                         exc_info=True,
                     )
-            await asyncio.gather(
-                _monitor_projects(
-                    settings,
-                    store,
-                    fl_source,
-                    kwork_source,
-                    profi_source,
-                    fl_lock,
-                    kwork_lock,
-                    profi_lock,
-                    bot,
-                    advisor,
-                ),
-                _listen_for_commands(
-                    bot,
-                    store,
-                    fl_source,
-                    kwork_source,
-                    profi_source,
-                    fl_lock,
-                    kwork_lock,
-                    profi_lock,
-                    advisor,
-                ),
-            )
+            async with asyncio.TaskGroup() as tasks:
+                tasks.create_task(
+                    _monitor_projects(
+                        settings,
+                        store,
+                        fl_source,
+                        kwork_source,
+                        profi_source,
+                        fl_lock,
+                        kwork_lock,
+                        profi_lock,
+                        bot,
+                        advisor,
+                    )
+                )
+                tasks.create_task(
+                    _listen_for_commands(
+                        bot,
+                        store,
+                        fl_source,
+                        kwork_source,
+                        profi_source,
+                        fl_lock,
+                        kwork_lock,
+                        profi_lock,
+                        advisor,
+                    )
+                )
     finally:
+        if profi_source is not None:
+            await profi_source.close()
         if advisor is not None:
             await advisor.__aexit__(None, None, None)
         await kwork_source.close()
