@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from freelance_bot.main import _format_statistics
@@ -261,3 +261,91 @@ def test_store_migrates_ai_assessment_summary(tmp_path: Path) -> None:
         connection.close()
 
     assert "summary" in columns
+
+
+def test_kwork_restarted_publication_is_treated_as_new(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path / "restarted.sqlite3")
+    original_date = datetime(2026, 7, 27, 8, 34, 20, tzinfo=UTC)
+    original = Project(
+        "Kwork",
+        "3225088",
+        "Дизайн сайта доставки еды из ресторанов",
+        "Нужно разработать дизайн сайта",
+        "до 25 000 ₽",
+        "https://kwork.ru/projects/3225088/view",
+        "Веб и мобильный дизайн",
+        original_date,
+    )
+    store.remember_project(original)
+    store.mark_seen(original.key, original.source)
+
+    same_publication = Project(
+        source=original.source,
+        external_id=original.external_id,
+        title=original.title,
+        description=original.description,
+        price=original.price,
+        url=original.url,
+        category=original.category,
+        published_at=original_date,
+        publication_id=str(int(original_date.timestamp())),
+    )
+    assert store.is_project_seen(same_publication)
+
+    restarted_date = original_date + timedelta(days=2)
+    restarted = Project(
+        source=original.source,
+        external_id=original.external_id,
+        title=original.title,
+        description=original.description,
+        price=original.price,
+        url=original.url,
+        category=original.category,
+        published_at=restarted_date,
+        publication_id=str(int(restarted_date.timestamp())),
+    )
+    assert not store.is_project_seen(restarted)
+
+    store.remember_project(restarted)
+    store.mark_seen(restarted.key, restarted.source)
+    assert store.is_project_seen(restarted)
+    assert store.get_project(restarted.key) == restarted
+    store.close()
+
+
+def test_publication_compatibility_uses_first_seen_without_catalog(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path / "legacy-first-run.sqlite3")
+    canonical_key = "Kwork:77"
+    store.mark_seen(canonical_key, "Kwork", count_for_statistics=False)
+    store._connection.execute(
+        "UPDATE seen_projects SET first_seen_at = ? WHERE project_key = ?",
+        ("2026-07-27 10:00:00.000", canonical_key),
+    )
+    store._connection.commit()
+
+    same_old_project = Project(
+        "Kwork",
+        "77",
+        "Старый проект",
+        "Описание",
+        "",
+        "https://kwork.ru/projects/77/view",
+        "Дизайн",
+        datetime(2026, 7, 27, 9, 55, tzinfo=UTC),
+        str(int(datetime(2026, 7, 27, 9, 55, tzinfo=UTC).timestamp())),
+    )
+    restarted_project = Project(
+        "Kwork",
+        "77",
+        "Перезапущенный проект",
+        "Описание",
+        "",
+        "https://kwork.ru/projects/77/view",
+        "Дизайн",
+        datetime(2026, 7, 28, 9, 55, tzinfo=UTC),
+        str(int(datetime(2026, 7, 28, 9, 55, tzinfo=UTC).timestamp())),
+    )
+
+    assert store.is_project_seen(same_old_project)
+    assert not store.is_project_seen(restarted_project)
+    store.close()

@@ -38,11 +38,10 @@ COMMAND_SET_CONFIG_TEXT = "set_config_text"
 COMMAND_REWRITE_RESPONSE = "rewrite_response"
 COMMAND_SOURCE_SETTINGS = "source_settings"
 COMMAND_FILTER_SETTINGS = "filter_settings"
-COMMAND_QUIET_SETTINGS = "quiet_settings"
 COMMAND_EDIT_FILTER = "edit_filter"
 COMMAND_UPDATE_FILTER = "update_filter"
 RESPONSE_ACTIONS = {"different", "shorter", "formal", "friendly", "question"}
-FILTER_NAMES = {"score", "budget", "include", "exclude", "quiet"}
+FILTER_NAMES = {"score", "budget"}
 DISPLAY_TZ = timezone(timedelta(hours=5))
 ALL_COMMANDS = {
     COMMAND_KWORK,
@@ -70,7 +69,6 @@ ALL_COMMANDS = {
     COMMAND_REWRITE_RESPONSE,
     COMMAND_SOURCE_SETTINGS,
     COMMAND_FILTER_SETTINGS,
-    COMMAND_QUIET_SETTINGS,
     COMMAND_EDIT_FILTER,
     COMMAND_UPDATE_FILTER,
 }
@@ -321,7 +319,6 @@ def settings_keyboard_json() -> str:
             "buttons": [
                 [button("🔔 Источники уведомлений", COMMAND_SOURCE_SETTINGS)],
                 [button("🎯 Фильтры проектов", COMMAND_FILTER_SETTINGS)],
-                [button("🌙 Тихие часы", COMMAND_QUIET_SETTINGS)],
                 [button("📝 AI-тексты", COMMAND_CONFIG_TEXTS)],
                 [button("🗑 Очистить чат", COMMAND_CLEAR_CHAT, "negative")],
                 [button("← Главное меню", COMMAND_MENU)],
@@ -397,48 +394,7 @@ def filter_settings_keyboard_json(*, min_score: int, min_budget: int) -> str:
             "buttons": [
                 [button(f"🎯 AI-балл: {min_score}", "score")],
                 [button(f"💰 Мин. бюджет: {budget}", "budget")],
-                [button("➕ Желательные слова", "include")],
-                [button("🚫 Исключающие слова", "exclude")],
                 [back],
-            ],
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
-
-def quiet_settings_keyboard_json(*, enabled: bool) -> str:
-    label = "🌙 Изменить расписание" if enabled else "🌙 Настроить тихие часы"
-    return json.dumps(
-        {
-            "one_time": False,
-            "inline": False,
-            "buttons": [
-                [
-                    {
-                        "action": {
-                            "type": "callback",
-                            "label": label,
-                            "payload": json.dumps(
-                                {"command": COMMAND_EDIT_FILTER, "filter_name": "quiet"},
-                                ensure_ascii=False,
-                            ),
-                        },
-                        "color": "secondary",
-                    }
-                ],
-                [
-                    {
-                        "action": {
-                            "type": "callback",
-                            "label": "← К настройкам",
-                            "payload": json.dumps(
-                                {"command": COMMAND_SETTINGS}, ensure_ascii=False
-                            ),
-                        },
-                        "color": "secondary",
-                    }
-                ],
             ],
         },
         ensure_ascii=False,
@@ -631,9 +587,6 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
     filter_commands = {
         "/score": "score",
         "/budget": "budget",
-        "/include": "include",
-        "/exclude": "exclude",
-        "/quiet": "quiet",
     }
     command_token = first_line.strip().casefold().split(maxsplit=1)[0] if first_line.strip() else ""
     if command_token in filter_commands:

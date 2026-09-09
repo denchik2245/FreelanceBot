@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import date, datetime, time, timedelta, timezone, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from freelance_bot.models import AiAssessment, Project
@@ -41,6 +41,10 @@ class ProjectStore:
         if "description" not in catalog_columns:
             self._connection.execute(
                 "ALTER TABLE project_catalog ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+            )
+        if "publication_id" not in catalog_columns:
+            self._connection.execute(
+                "ALTER TABLE project_catalog ADD COLUMN publication_id TEXT NOT NULL DEFAULT ''"
             )
         self._connection.execute(
             """
@@ -91,6 +95,11 @@ class ProjectStore:
             self._connection.execute(
                 "ALTER TABLE project_ai_assessments ADD COLUMN summary TEXT NOT NULL DEFAULT ''"
             )
+        if "filter_revision" not in assessment_columns:
+            self._connection.execute(
+                "ALTER TABLE project_ai_assessments "
+                "ADD COLUMN filter_revision TEXT NOT NULL DEFAULT ''"
+            )
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS project_ai_rejections (
@@ -135,6 +144,45 @@ class ProjectStore:
         ).fetchone()
         return row is not None
 
+    def is_project_seen(self, project: Project) -> bool:
+        """Check an occurrence while remaining compatible with legacy project keys."""
+        if self.is_seen(project.key):
+            return True
+        if not project.publication_id:
+            return False
+
+        legacy = self._connection.execute(
+            """
+            SELECT seen.first_seen_at, catalog.published_at
+            FROM seen_projects AS seen
+            LEFT JOIN project_catalog AS catalog
+                ON catalog.project_key = seen.project_key
+            WHERE seen.project_key = ?
+            """,
+            (project.canonical_key,),
+        ).fetchone()
+        if legacy is None:
+            return False
+
+        # Before publication-aware keys were introduced, Kwork projects were stored
+        # under Kwork:<id>. Avoid replaying that entire feed after deployment. A later
+        # date_confirm is a genuinely restarted publication and must pass through.
+        current_published_at = project.published_at
+        if current_published_at is None:
+            return True
+        baseline_value = legacy[1] or legacy[0]
+        baseline = datetime.fromisoformat(str(baseline_value))
+        if baseline.tzinfo is None:
+            baseline = baseline.replace(tzinfo=UTC)
+        else:
+            baseline = baseline.astimezone(UTC)
+        current = current_published_at
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=UTC)
+        else:
+            current = current.astimezone(UTC)
+        return current <= baseline + timedelta(seconds=1)
+
     def mark_seen(
         self, key: str, source: str | None = None, *, count_for_statistics: bool = True
     ) -> None:
@@ -154,8 +202,8 @@ class ProjectStore:
             """
             INSERT INTO project_catalog(
                 project_key, source, external_id, title, description,
-                price, url, category, published_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                price, url, category, published_at, publication_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(project_key) DO UPDATE SET
                 title = excluded.title,
                 description = excluded.description,
@@ -163,6 +211,7 @@ class ProjectStore:
                 url = excluded.url,
                 category = excluded.category,
                 published_at = excluded.published_at,
+                publication_id = excluded.publication_id,
                 last_seen_at = CURRENT_TIMESTAMP
             """,
             (
@@ -175,6 +224,7 @@ class ProjectStore:
                 project.url,
                 project.category,
                 published_at,
+                project.publication_id,
             ),
         )
         self._connection.commit()
@@ -213,16 +263,18 @@ class ProjectStore:
             """
             INSERT INTO project_ai_assessments(
                 project_key, suitable, score, reason, summary, response_text,
-                filter_model, response_model, analyzed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+                filter_model, response_model, filter_revision, analyzed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
             ON CONFLICT(project_key) DO UPDATE SET
                 suitable = excluded.suitable,
                 score = excluded.score,
                 reason = excluded.reason,
                 summary = excluded.summary,
-                response_text = excluded.response_text,
+                response_text = CASE WHEN excluded.response_text = ''
+                    THEN project_ai_assessments.response_text ELSE excluded.response_text END,
                 filter_model = excluded.filter_model,
                 response_model = excluded.response_model,
+                filter_revision = excluded.filter_revision,
                 analyzed_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
             """,
             (
@@ -234,6 +286,7 @@ class ProjectStore:
                 assessment.response_text,
                 assessment.filter_model,
                 assessment.response_model,
+                assessment.filter_revision,
             ),
         )
         self._connection.commit()
@@ -241,7 +294,8 @@ class ProjectStore:
     def get_ai_assessment(self, project_key: str) -> AiAssessment | None:
         row = self._connection.execute(
             """
-            SELECT suitable, score, reason, summary, response_text, filter_model, response_model
+            SELECT suitable, score, reason, summary, response_text, filter_model, response_model,
+                   filter_revision
             FROM project_ai_assessments
             WHERE project_key = ?
             """,
@@ -258,6 +312,7 @@ class ProjectStore:
             response_text=str(row[4]),
             filter_model=str(row[5]),
             response_model=str(row[6]),
+            filter_revision=str(row[7]),
         )
 
     def mark_ai_rejected(self, project_key: str) -> None:
@@ -339,7 +394,8 @@ class ProjectStore:
     def get_project(self, project_key: str) -> Project | None:
         row = self._connection.execute(
             """
-            SELECT source, external_id, title, description, price, url, category, published_at
+            SELECT source, external_id, title, description, price, url, category,
+                   published_at, publication_id
             FROM project_catalog WHERE project_key = ?
             """,
             (project_key,),
@@ -356,6 +412,7 @@ class ProjectStore:
             url=row[5],
             category=row[6],
             published_at=published_at,
+            publication_id=str(row[8]),
         )
 
     def get_project_feedback(self, project_key: str) -> tuple[str, str | None] | None:

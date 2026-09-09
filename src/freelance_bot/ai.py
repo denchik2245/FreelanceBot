@@ -7,6 +7,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
+from hashlib import sha256
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
@@ -161,6 +162,15 @@ class GigaChatProjectAdvisor:
     def response_model(self) -> str:
         return self._response_model
 
+    @property
+    def filter_revision(self) -> str:
+        """Identify the rules used to assess a project, including live config edits."""
+        rules = json.dumps(
+            [self._filter_prompt, self._profile, self._filter_model, self._response_model],
+            ensure_ascii=False,
+        )
+        return sha256(rules.encode("utf-8")).hexdigest()
+
     def update_config_text(self, key: str, text: str) -> None:
         """Apply an already validated config edit without restarting the clients."""
         value = text.strip()
@@ -227,6 +237,8 @@ class GigaChatProjectAdvisor:
             self._stack = None
 
     async def assess(self, project: Project) -> AiAssessment:
+        # Capture before awaiting: a VK config edit may arrive during this request.
+        filter_revision = self.filter_revision
         filter_request = Chat(
             model=self._filter_model,
             temperature=0.1,
@@ -281,6 +293,7 @@ class GigaChatProjectAdvisor:
             filter_model=used_model,
             response_model="",
             summary=summary,
+            filter_revision=filter_revision,
         )
         LOGGER.info(
             "AI-оценка %s моделью %s: %d/100, подходит=%s — %s",

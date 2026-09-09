@@ -27,7 +27,6 @@ from freelance_bot.vk import (
     COMMAND_KWORK,
     COMMAND_MENU,
     COMMAND_PROFI,
-    COMMAND_QUIET_SETTINGS,
     COMMAND_RECENT,
     COMMAND_REJECTED,
     COMMAND_RESPONDED,
@@ -52,7 +51,6 @@ from freelance_bot.vk import (
     format_message,
     keyboard_json,
     project_keyboard_json,
-    quiet_settings_keyboard_json,
     recent_keyboard_json,
     response_detail_keyboard_json,
     response_variants_keyboard_json,
@@ -144,8 +142,15 @@ async def _monitor_projects(
         for source, projects in projects_by_source.items():
             first_source_run = not store.is_source_initialized(source)
             for project in projects:
-                if store.is_seen(project.key):
+                if store.is_project_seen(project):
                     continue
+                if project.publication_id and store.is_seen(project.canonical_key):
+                    LOGGER.info(
+                        "Обнаружена повторная публикация: %s — %s (%s)",
+                        project.source,
+                        project.title,
+                        project.published_at,
+                    )
                 if first_source_run and not settings.send_existing_on_first_run:
                     store.mark_seen(project.key, project.source, count_for_statistics=False)
                     continue
@@ -175,15 +180,16 @@ async def _monitor_projects(
                         rejection_reason,
                     )
                     continue
-                if project_filters.is_quiet_now(datetime.now(DISPLAY_TZ)):
-                    LOGGER.debug("Тихие часы: %s оставлен в очереди", project.key)
-                    continue
                 assessment = None
                 try:
                     store.remember_project(project)
                     if advisor is not None:
                         assessment = store.get_ai_assessment(project.key)
-                        if assessment is None or not assessment.summary:
+                        if (
+                            assessment is None
+                            or not assessment.summary
+                            or assessment.filter_revision != advisor.filter_revision
+                        ):
                             assessment = await advisor.assess(project)
                             store.remember_ai_assessment(assessment)
                 except Exception:
@@ -252,7 +258,11 @@ async def _latest_suitable_projects(
             continue
         store.remember_project(project)
         assessment = store.get_ai_assessment(project.key)
-        if assessment is None or not assessment.summary:
+        if (
+            assessment is None
+            or not assessment.summary
+            or assessment.filter_revision != advisor.filter_revision
+        ):
             try:
                 assessment = await advisor.assess(project)
                 store.remember_ai_assessment(assessment)
@@ -395,35 +405,15 @@ async def _listen_for_commands(
             if current.min_budget
             else "выключен"
         )
-        include = ", ".join(current.include_keywords) or "не заданы"
-        exclude = ", ".join(current.exclude_keywords) or "не заданы"
         await show_notice(
             "🎯 Фильтры проектов\n\n"
             f"Минимальный AI-балл — {current.min_ai_score}\n"
-            f"Минимальный бюджет — {budget}\n"
-            f"Желательные слова — {include}\n"
-            f"Исключающие слова — {exclude}\n\n"
+            f"Минимальный бюджет — {budget}\n\n"
             "Проекты без указанного бюджета не отбрасываются.",
             filter_settings_keyboard_json(
                 min_score=current.min_ai_score,
                 min_budget=current.min_budget,
             ),
-        )
-
-    async def show_quiet_settings() -> None:
-        current = project_filters.settings()
-        enabled = current.quiet_start is not None and current.quiet_end is not None
-        schedule = (
-            f"с {current.quiet_start:02d}:00 до {current.quiet_end:02d}:00 (МСК+2)"
-            if enabled
-            else "выключены"
-        )
-        await show_notice(
-            "🌙 Тихие часы\n\n"
-            f"Сейчас: {schedule}.\n\n"
-            "Во время тихих часов новые проекты остаются в очереди и отправляются позже, "
-            "если им ещё нет 24 часов.",
-            quiet_settings_keyboard_json(enabled=enabled),
         )
 
     async def show_filter_editor(name: str) -> None:
@@ -437,30 +427,10 @@ async def _listen_for_commands(
                 f"Текущий минимальный бюджет: {current.min_budget} ₽\n\n"
                 "Отправьте, например: /budget 10000\nДля отключения: /budget 0"
             ),
-            "include": (
-                "Текущие желательные слова: "
-                f"{', '.join(current.include_keywords) or 'не заданы'}\n\n"
-                "Отправьте: /include figma, tilda, интернет-магазин\n"
-                "Для очистки: /include off"
-            ),
-            "exclude": (
-                "Текущие исключающие слова: "
-                f"{', '.join(current.exclude_keywords) or 'не заданы'}\n\n"
-                "Отправьте: /exclude wordpress, seo, парсинг\n"
-                "Для очистки: /exclude off"
-            ),
-            "quiet": (
-                "Отправьте часы начала и конца по МСК+2, например: /quiet 23 8\n"
-                "Для отключения: /quiet off"
-            ),
         }
-        keyboard = (
-            quiet_settings_keyboard_json(enabled=current.quiet_start is not None)
-            if name == "quiet"
-            else filter_settings_keyboard_json(
-                min_score=current.min_ai_score,
-                min_budget=current.min_budget,
-            )
+        keyboard = filter_settings_keyboard_json(
+            min_score=current.min_ai_score,
+            min_budget=current.min_budget,
         )
         await show_notice(f"✏️ Изменение настройки\n\n{instructions[name]}", keyboard)
 
@@ -523,9 +493,6 @@ async def _listen_for_commands(
         if command == COMMAND_FILTER_SETTINGS:
             await show_filter_settings()
             return
-        if command == COMMAND_QUIET_SETTINGS:
-            await show_quiet_settings()
-            return
         if command == COMMAND_EDIT_FILTER:
             if event.filter_name is None:
                 await show_filter_settings()
@@ -542,28 +509,12 @@ async def _listen_for_commands(
                 elif event.filter_name == "budget":
                     normalized = value.replace(" ", "")
                     project_filters.set_min_budget(0 if normalized == "off" else int(normalized))
-                elif event.filter_name in {"include", "exclude"}:
-                    project_filters.set_keywords(
-                        event.filter_name,
-                        "" if value.casefold() in {"off", "нет", "-"} else value,
-                    )
-                elif event.filter_name == "quiet":
-                    if value.casefold() in {"off", "нет", "-"}:
-                        project_filters.set_quiet_hours(None, None)
-                    else:
-                        hours = [int(part) for part in value.replace(":", " ").split()]
-                        if len(hours) != 2:
-                            raise ValueError("Используйте формат /quiet 23 8")
-                        project_filters.set_quiet_hours(hours[0], hours[1])
                 else:
                     raise ValueError("Неизвестная настройка фильтра")
             except (ValueError, TypeError) as error:
                 await show_notice(f"⚠️ {error}", settings_keyboard_json())
                 return
-            if event.filter_name == "quiet":
-                await show_quiet_settings()
-            else:
-                await show_filter_settings()
+            await show_filter_settings()
             return
         if command == COMMAND_CONFIG_TEXTS:
             await show_config_texts()
@@ -924,7 +875,7 @@ async def run(settings: Settings) -> None:
             fl_lock = asyncio.Lock()
             kwork_lock = asyncio.Lock()
             profi_lock = asyncio.Lock()
-            if store.get_state("vk_keyboard_version") != "10":
+            if store.get_state("vk_keyboard_version") != "11":
                 try:
                     await bot.clear_persistent_keyboard()
                 except Exception:
@@ -945,7 +896,7 @@ async def run(settings: Settings) -> None:
                             "Не удалось обновить кнопки старых проектов VK",
                             exc_info=True,
                         )
-                    store.set_state("vk_keyboard_version", "10")
+                    store.set_state("vk_keyboard_version", "11")
                 except Exception:
                     LOGGER.warning(
                         "Не удалось установить постоянную клавиатуру VK",

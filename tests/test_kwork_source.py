@@ -48,6 +48,8 @@ async def test_fetch_uses_all_categories_and_multiple_pages() -> None:
     assert projects[0].category == "Веб и мобильный дизайн"
     assert projects[0].url == "https://kwork.ru/projects/123/view"
     assert projects[0].published_at == datetime.fromtimestamp(client.timestamp, UTC)
+    assert projects[0].publication_id == str(client.timestamp)
+    assert projects[0].key == f"Kwork:123@{client.timestamp}"
 
 
 async def test_manual_fetch_uses_targeted_categories_without_age_cutoff() -> None:

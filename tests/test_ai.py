@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from freelance_bot.ai import GigaChatProjectAdvisor, _parse_filter_result, _project_context
+from freelance_bot.main import _latest_suitable_projects
 from freelance_bot.models import Project
+from freelance_bot.storage import ProjectStore
 
 
 def _response(text: str, model: str) -> SimpleNamespace:
@@ -220,3 +222,57 @@ def test_response_prompt_requires_three_case_links_and_no_mobile_adaptation_ques
     assert "ровно 3 прямые ссылки" in prompt
     assert "3 последних проекта" in prompt
     assert "Не спрашивай, нужна ли адаптация под мобильные устройства" in prompt
+
+
+def test_filter_revision_tracks_selection_rules_only() -> None:
+    advisor, _, _ = _advisor(85)
+    original = advisor.filter_revision
+    advisor.update_config_text("response", "Другой стиль отклика")
+    advisor.set_min_score(80)
+    assert advisor.filter_revision == original
+    advisor.update_config_text("filter", "Исключить email-письма")
+    revised = advisor.filter_revision
+    assert revised != original
+    advisor.update_config_text("profile", "Дизайн мобильных приложений")
+    assert advisor.filter_revision != revised
+
+
+@pytest.mark.asyncio
+async def test_recent_projects_reassess_after_rules_change(tmp_path: Path) -> None:
+    advisor, client, _ = _advisor(85)
+    project = _project()
+    store = ProjectStore(tmp_path / "cache.sqlite3")
+    try:
+        assert len(await _latest_suitable_projects([project], store, advisor)) == 1
+        cached = store.get_ai_assessment(project.key)
+        assert cached.filter_revision == advisor.filter_revision
+        assert len(await _latest_suitable_projects([project], store, advisor)) == 1
+        assert len(client.requests) == 1
+
+        advisor.update_config_text("filter", "Новые критерии отбора")
+        client.responses.append(
+            '{"score": 15, "reason": "Не соответствует новым критериям", '
+            '"summary": "Описание задачи"}'
+        )
+        assert await _latest_suitable_projects([project], store, advisor) == []
+        assert len(client.requests) == 2
+        assert store.get_ai_assessment(project.key).filter_revision == advisor.filter_revision
+        assert not store.is_seen(project.key)
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_assessment_keeps_rules_used_before_live_edit() -> None:
+    advisor, client, _ = _advisor(85)
+    original = advisor.filter_revision
+    original_achat = client.achat
+
+    async def edit_during_request(request: object) -> SimpleNamespace:
+        advisor.update_config_text("filter", "Новые критерии во время запроса")
+        return await original_achat(request)
+
+    client.achat = edit_during_request
+    assessment = await advisor.assess(_project())
+    assert assessment.filter_revision == original
+    assert assessment.filter_revision != advisor.filter_revision

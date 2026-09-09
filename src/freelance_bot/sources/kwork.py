@@ -114,6 +114,10 @@ class KworkSource:
                         if date_confirm
                         else None
                     ),
+                    # Kwork can publish the same project ID in the general feed again.
+                    # date_confirm identifies that particular publication, while staying
+                    # stable during ordinary polling of the feed.
+                    publication_id=str(int(date_confirm)) if date_confirm else "",
                 )
                 page_projects.append(project)
                 unique.setdefault(project.key, project)

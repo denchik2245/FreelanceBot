@@ -10,22 +10,23 @@ from freelance_bot.vk import (
     COMMAND_FL,
     COMMAND_KWORK,
     COMMAND_RECENT,
-    COMMAND_REWRITE_RESPONSE,
     COMMAND_RESPONDED,
-    COMMAND_SETTINGS,
+    COMMAND_REWRITE_RESPONSE,
     COMMAND_SET_CONFIG_TEXT,
+    COMMAND_SETTINGS,
     COMMAND_UPDATE_FILTER,
     COMMAND_WRITE_RESPONSE,
     VkApiError,
     VkBot,
+    filter_settings_keyboard_json,
     format_message,
     keyboard_json,
     parse_command,
     project_keyboard_json,
     recent_keyboard_json,
     response_variants_keyboard_json,
-    source_settings_keyboard_json,
     settings_keyboard_json,
+    source_settings_keyboard_json,
     statistics_keyboard_json,
 )
 
@@ -248,7 +249,6 @@ def test_settings_keyboard_is_grouped_into_clear_sections() -> None:
     assert labels == [
         "🔔 Источники уведомлений",
         "🎯 Фильтры проектов",
-        "🌙 Тихие часы",
         "📝 AI-тексты",
         "🗑 Очистить чат",
         "← Главное меню",
@@ -268,6 +268,17 @@ def test_source_settings_keyboard_reflects_notification_state() -> None:
     assert keyboard["buttons"][3][0]["action"]["label"] == "← К настройкам"
 
 
+def test_filter_settings_keyboard_only_has_score_and_budget() -> None:
+    keyboard = json.loads(filter_settings_keyboard_json(min_score=70, min_budget=10_000))
+    labels = [row[0]["action"]["label"] for row in keyboard["buttons"]]
+
+    assert labels == [
+        "🎯 AI-балл: 70",
+        "💰 Мин. бюджет: 10 000 ₽",
+        "← К настройкам",
+    ]
+
+
 def test_parse_filter_update_commands() -> None:
     score = parse_command({"text": "/score 82"})
     assert score is not None
@@ -275,10 +286,9 @@ def test_parse_filter_update_commands() -> None:
     assert score.filter_name == "score"
     assert score.content == "82"
 
-    include = parse_command({"text": "/include\nfigma, tilda"})
-    assert include is not None
-    assert include.filter_name == "include"
-    assert include.content == "figma, tilda"
+    assert parse_command({"text": "/include\nfigma, tilda"}) is None
+    assert parse_command({"text": "/exclude wordpress"}) is None
+    assert parse_command({"text": "/quiet 23 8"}) is None
 
 
 def test_statistics_keyboard_has_destructive_reset() -> None:
