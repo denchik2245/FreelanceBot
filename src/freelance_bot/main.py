@@ -9,7 +9,7 @@ from freelance_bot.ai import GigaChatProjectAdvisor
 from freelance_bot.config import Settings
 from freelance_bot.config_texts import ConfigTextManager
 from freelance_bot.keywords import matches_project_keywords
-from freelance_bot.models import AiAssessment, Project
+from freelance_bot.models import Project
 from freelance_bot.project_filters import ProjectFilterManager
 from freelance_bot.sources.fl import FlSource
 from freelance_bot.sources.kwork import KworkSource
@@ -23,12 +23,7 @@ from freelance_bot.vk import (
     COMMAND_CONFIG_TEXTS,
     COMMAND_EDIT_FILTER,
     COMMAND_FILTER_SETTINGS,
-    COMMAND_FL,
-    COMMAND_KWORK,
     COMMAND_MENU,
-    COMMAND_PROFI,
-    COMMAND_RECENT,
-    COMMAND_REJECTED,
     COMMAND_RESPONDED,
     COMMAND_RESPONSE_PROJECT,
     COMMAND_RESPONSES,
@@ -48,10 +43,10 @@ from freelance_bot.vk import (
     VkBot,
     config_texts_keyboard_json,
     filter_settings_keyboard_json,
+    format_active_responses,
     format_message,
     keyboard_json,
     project_keyboard_json,
-    recent_keyboard_json,
     response_detail_keyboard_json,
     response_variants_keyboard_json,
     responses_keyboard_json,
@@ -226,69 +221,6 @@ async def _monitor_projects(
         await asyncio.sleep(settings.poll_interval_seconds)
 
 
-def _latest_five(projects: list[Project]) -> list[Project]:
-    def sort_key(project: Project) -> tuple[float, int]:
-        timestamp = project.published_at.timestamp() if project.published_at else 0.0
-        numeric_id = int(project.external_id) if project.external_id.isdigit() else 0
-        return timestamp, numeric_id
-
-    return sorted(projects, key=sort_key, reverse=True)[:5]
-
-
-async def _latest_suitable_projects(
-    projects: list[Project],
-    store: ProjectStore,
-    advisor: GigaChatProjectAdvisor,
-    *,
-    limit: int = 5,
-    project_filters: ProjectFilterManager | None = None,
-) -> list[tuple[Project, AiAssessment]]:
-    """Walk newest-first until enough successfully assessed suitable projects are found."""
-    selected: list[tuple[Project, AiAssessment]] = []
-    candidates = sorted(
-        projects,
-        key=lambda item: (
-            item.published_at.timestamp() if item.published_at else 0.0,
-            int(item.external_id) if item.external_id.isdigit() else 0,
-        ),
-        reverse=True,
-    )
-    for project in candidates:
-        if project_filters is not None and project_filters.rejection_reason(project) is not None:
-            continue
-        store.remember_project(project)
-        assessment = store.get_ai_assessment(project.key)
-        if (
-            assessment is None
-            or not assessment.summary
-            or assessment.filter_revision != advisor.filter_revision
-        ):
-            try:
-                assessment = await advisor.assess(project)
-                store.remember_ai_assessment(assessment)
-            except Exception:
-                LOGGER.exception("Не удалось оценить проект ручной выдачи %s", project.key)
-                continue
-        suitable = (
-            assessment.score >= project_filters.settings().min_ai_score
-            if project_filters is not None
-            else assessment.suitable
-        )
-        if not suitable:
-            store.mark_ai_rejected(project.key)
-            LOGGER.info(
-                "AI отфильтровал проект ручной выдачи %s: %d/100 — %s",
-                project.key,
-                assessment.score,
-                assessment.reason,
-            )
-            continue
-        selected.append((project, assessment))
-        if len(selected) == limit:
-            break
-    return selected
-
-
 def _format_statistics(store: ProjectStore) -> str:
     statistics = store.project_statistics()
     ai_rejected = store.ai_rejected_statistics()
@@ -333,7 +265,6 @@ def _format_feedback_summary(store: ProjectStore) -> str:
             "📨 Отклики",
             "",
             f"Откликнулся — {counts['responded']}",
-            f"Не подошло — {counts['rejected']}",
             f"Клиент написал — {counts['client_replied']}",
             f"Заказали у другого — {counts['client_chose_other']}",
         )
@@ -353,7 +284,6 @@ async def _listen_for_commands(
     config_texts: ConfigTextManager,
     project_filters: ProjectFilterManager,
 ) -> None:
-    command_lock = asyncio.Lock()
     response_lock = asyncio.Lock()
 
     async def edit_project_message(event: BotCommand, message: str, keyboard: str) -> None:
@@ -383,15 +313,16 @@ async def _listen_for_commands(
 
     async def show_responses() -> None:
         active = store.active_responses(limit=8)
-        projects = [project for project, _ in active]
         if active:
             message = (
                 f"{_format_feedback_summary(store)}\n\n"
-                f"Активных откликов — {len(active)}.\nВыберите проект:"
+                f"Активных откликов — {len(active)}\n\n"
+                f"{format_active_responses(active)}\n\n"
+                "Статус можно изменить кнопкой в соответствующей строке."
             )
         else:
             message = f"{_format_feedback_summary(store)}\n\nАктивных откликов пока нет."
-        await bot.set_persistent_keyboard(responses_keyboard_json(projects))
+        await bot.set_persistent_keyboard(responses_keyboard_json(active))
         await bot.replace_ui(message)
 
     async def show_notice(message: str, keyboard: str) -> None:
@@ -641,12 +572,11 @@ async def _listen_for_commands(
                     )
             await bot.send_text(response_text, keyboard=variants_keyboard)
             return
-        if command in {COMMAND_RESPONDED, COMMAND_REJECTED}:
+        if command == COMMAND_RESPONDED:
             if event.project_key is None:
                 return
-            decision = "responded" if command == COMMAND_RESPONDED else "rejected"
             try:
-                selected_decision = store.toggle_project_decision(event.project_key, decision)
+                selected_decision = store.toggle_project_decision(event.project_key, "responded")
             except KeyError:
                 LOGGER.warning("Проект не найден в локальной истории: %s", event.project_key)
                 return
@@ -707,10 +637,6 @@ async def _listen_for_commands(
         if command == COMMAND_RESPONSES:
             await show_responses()
             return
-        if command == COMMAND_RECENT:
-            await bot.hide_ui()
-            await bot.set_persistent_keyboard(recent_keyboard_json())
-            return
         if command == COMMAND_RESPONSE_PROJECT:
             if event.project_key is None:
                 await show_responses()
@@ -738,80 +664,6 @@ async def _listen_for_commands(
             store.toggle_notifications(source)
             await show_sources()
             return
-        if command not in {COMMAND_KWORK, COMMAND_FL, COMMAND_PROFI}:
-            return
-        if command_lock.locked():
-            await show_notice("⏳ Предыдущий запрос ещё выполняется.", recent_keyboard_json())
-            return
-        async with command_lock:
-            source_name = {
-                COMMAND_KWORK: "Kwork",
-                COMMAND_FL: "FL.ru",
-                COMMAND_PROFI: "Profi.ru",
-            }[command]
-            if command == COMMAND_PROFI and profi_source is None:
-                await show_notice(
-                    "⚠️ Profi.ru ещё не настроен. Добавьте PROFI_LOGIN и "
-                    "PROFI_PASSWORD в .env и перезапустите контейнер.",
-                    recent_keyboard_json(),
-                )
-                return
-            await show_notice(
-                f"⏳ Загружаю последние проекты {source_name}…",
-                recent_keyboard_json(),
-            )
-            try:
-                if command == COMMAND_KWORK:
-                    async with kwork_lock:
-                        projects = await kwork_source.fetch_for_manual_selection()
-                elif command == COMMAND_FL:
-                    async with fl_lock:
-                        projects = await fl_source.fetch()
-                else:
-                    assert profi_source is not None
-                    async with profi_lock:
-                        projects = await profi_source.fetch_for_manual_selection()
-            except Exception:
-                LOGGER.exception("Ошибка тестовой выдачи %s", source_name)
-                await show_notice(
-                    f"⚠️ Не удалось загрузить проекты {source_name}.",
-                    recent_keyboard_json(),
-                )
-                return
-            candidates = _keyword_candidates(source_name, projects)
-            if not candidates:
-                await show_notice(
-                    f"В общей ленте {source_name} совпадений по ключевым словам пока нет.",
-                    recent_keyboard_json(),
-                )
-                return
-            if advisor is None:
-                await show_notice(
-                    "⚠️ GigaChat отключён, поэтому выбрать подходящие проекты нельзя.",
-                    recent_keyboard_json(),
-                )
-                return
-            await bot.hide_ui()
-            selected = await _latest_suitable_projects(
-                candidates,
-                store,
-                advisor,
-                project_filters=project_filters,
-            )
-            if not selected:
-                await show_notice(
-                    f"Среди последних проектов {source_name} AI не нашёл подходящих.",
-                    recent_keyboard_json(),
-                )
-                return
-            for project, assessment in reversed(selected):
-                feedback = store.get_project_feedback(project.key)
-                await bot.send(
-                    project,
-                    test_view=True,
-                    decision=feedback[0] if feedback is not None else None,
-                    assessment=assessment,
-                )
 
     await bot.listen(handle)
 
@@ -875,7 +727,7 @@ async def run(settings: Settings) -> None:
             fl_lock = asyncio.Lock()
             kwork_lock = asyncio.Lock()
             profi_lock = asyncio.Lock()
-            if store.get_state("vk_keyboard_version") != "11":
+            if store.get_state("vk_keyboard_version") != "12":
                 try:
                     await bot.clear_persistent_keyboard()
                 except Exception:
@@ -884,7 +736,7 @@ async def run(settings: Settings) -> None:
                     await bot.cleanup_old_navigation_messages()
                     await bot.set_persistent_keyboard(keyboard_json())
                     try:
-                        await bot.refresh_recent_project_keyboards(
+                        await bot.refresh_project_keyboards(
                             lambda project_key: (
                                 feedback[0]
                                 if (feedback := store.get_project_feedback(project_key)) is not None
@@ -896,7 +748,7 @@ async def run(settings: Settings) -> None:
                             "Не удалось обновить кнопки старых проектов VK",
                             exc_info=True,
                         )
-                    store.set_state("vk_keyboard_version", "11")
+                    store.set_state("vk_keyboard_version", "12")
                 except Exception:
                     LOGGER.warning(
                         "Не удалось установить постоянную клавиатуру VK",

@@ -20,7 +20,6 @@ GRAPHQL_URL = f"{BASE_URL}/graphql"
 TARGET_CATEGORY_LABEL = "Услуги аккаунта Profi.ru"
 PAGE_SIZE = 50
 MAX_PAGES = 5
-MANUAL_MAX_PAGES = 10
 MAX_PROJECT_AGE = timedelta(hours=24)
 AUTH_RETRY_BASE_SECONDS = 300
 AUTH_RETRY_MAX_SECONDS = 3600
@@ -881,12 +880,4 @@ class ProfiSource:
                 max_pages=MAX_PAGES,
                 cutoff=datetime.now(UTC) - MAX_PROJECT_AGE,
                 feed_label="сохранённый фильтр",
-            )
-
-    async def fetch_for_manual_selection(self) -> list[Project]:
-        async with self._browser_session():
-            return await self._fetch_projects(
-                max_pages=MANUAL_MAX_PAGES,
-                cutoff=None,
-                feed_label="ручная AI-выдача",
             )

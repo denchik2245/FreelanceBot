@@ -5,9 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from freelance_bot.ai import GigaChatProjectAdvisor, _parse_filter_result, _project_context
-from freelance_bot.main import _latest_suitable_projects
 from freelance_bot.models import Project
-from freelance_bot.storage import ProjectStore
 
 
 def _response(text: str, model: str) -> SimpleNamespace:
@@ -235,31 +233,6 @@ def test_filter_revision_tracks_selection_rules_only() -> None:
     assert revised != original
     advisor.update_config_text("profile", "Дизайн мобильных приложений")
     assert advisor.filter_revision != revised
-
-
-@pytest.mark.asyncio
-async def test_recent_projects_reassess_after_rules_change(tmp_path: Path) -> None:
-    advisor, client, _ = _advisor(85)
-    project = _project()
-    store = ProjectStore(tmp_path / "cache.sqlite3")
-    try:
-        assert len(await _latest_suitable_projects([project], store, advisor)) == 1
-        cached = store.get_ai_assessment(project.key)
-        assert cached.filter_revision == advisor.filter_revision
-        assert len(await _latest_suitable_projects([project], store, advisor)) == 1
-        assert len(client.requests) == 1
-
-        advisor.update_config_text("filter", "Новые критерии отбора")
-        client.responses.append(
-            '{"score": 15, "reason": "Не соответствует новым критериям", '
-            '"summary": "Описание задачи"}'
-        )
-        assert await _latest_suitable_projects([project], store, advisor) == []
-        assert len(client.requests) == 2
-        assert store.get_ai_assessment(project.key).filter_revision == advisor.filter_revision
-        assert not store.is_seen(project.key)
-    finally:
-        store.close()
 
 
 @pytest.mark.asyncio

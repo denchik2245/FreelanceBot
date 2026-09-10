@@ -4,7 +4,7 @@ import logging
 import random
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import timedelta, timezone
+from datetime import UTC, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -13,21 +13,16 @@ import aiohttp
 from freelance_bot.models import AiAssessment, Project
 
 LOGGER = logging.getLogger(__name__)
-COMMAND_KWORK = "last_kwork"
-COMMAND_FL = "last_fl"
-COMMAND_PROFI = "last_profi"
 COMMAND_MENU = "menu"
 COMMAND_SETTINGS = "settings"
 COMMAND_STATISTICS = "statistics"
 COMMAND_CLEAR_STATISTICS = "clear_statistics"
 COMMAND_CLEAR_CHAT = "clear_chat"
 COMMAND_RESPONSES = "responses"
-COMMAND_RECENT = "recent"
 COMMAND_TOGGLE_KWORK = "toggle_kwork"
 COMMAND_TOGGLE_FL = "toggle_fl"
 COMMAND_TOGGLE_PROFI = "toggle_profi"
 COMMAND_RESPONDED = "responded"
-COMMAND_REJECTED = "rejected"
 COMMAND_WRITE_RESPONSE = "write_response"
 COMMAND_CLIENT_REPLIED = "client_replied"
 COMMAND_CLIENT_CHOSE_OTHER = "client_chose_other"
@@ -44,21 +39,16 @@ RESPONSE_ACTIONS = {"different", "shorter", "formal", "friendly", "question"}
 FILTER_NAMES = {"score", "budget"}
 DISPLAY_TZ = timezone(timedelta(hours=5))
 ALL_COMMANDS = {
-    COMMAND_KWORK,
-    COMMAND_FL,
-    COMMAND_PROFI,
     COMMAND_MENU,
     COMMAND_SETTINGS,
     COMMAND_STATISTICS,
     COMMAND_CLEAR_STATISTICS,
     COMMAND_CLEAR_CHAT,
     COMMAND_RESPONSES,
-    COMMAND_RECENT,
     COMMAND_TOGGLE_KWORK,
     COMMAND_TOGGLE_FL,
     COMMAND_TOGGLE_PROFI,
     COMMAND_RESPONDED,
-    COMMAND_REJECTED,
     COMMAND_WRITE_RESPONSE,
     COMMAND_CLIENT_REPLIED,
     COMMAND_CLIENT_CHOSE_OTHER,
@@ -104,10 +94,8 @@ def _clip(text: str, limit: int) -> str:
 def format_message(
     project: Project,
     *,
-    test_view: bool = False,
     assessment: AiAssessment | None = None,
 ) -> str:
-    del test_view  # Тестовая и автоматическая выдача намеренно выглядят одинаково.
     source = "Kwork.ru" if project.source == "Kwork" else project.source
     lines = [
         source,
@@ -118,7 +106,7 @@ def format_message(
     if project.published_at is not None:
         published = project.published_at
         if published.tzinfo is None:
-            published = published.replace(tzinfo=timezone.utc)
+            published = published.replace(tzinfo=UTC)
         lines.append(f"🕒 {published.astimezone(DISPLAY_TZ):%d.%m.%Y %H:%M}")
     lines.extend(("", project.url))
     if assessment is not None:
@@ -143,7 +131,6 @@ def keyboard_json() -> str:
         "one_time": False,
         "inline": False,
         "buttons": [
-            [button("🕘 Последние проекты", COMMAND_RECENT)],
             [
                 button("⚙ Настройки", COMMAND_SETTINGS),
                 button("📊 Статистика", COMMAND_STATISTICS),
@@ -152,35 +139,6 @@ def keyboard_json() -> str:
         ],
     }
     return json.dumps(keyboard, ensure_ascii=False, separators=(",", ":"))
-
-
-def recent_keyboard_json() -> str:
-    def button(label: str, command: str) -> dict[str, Any]:
-        return {
-            "action": {
-                "type": "callback",
-                "label": label,
-                "payload": json.dumps({"command": command}, ensure_ascii=False),
-            },
-            "color": "secondary",
-        }
-
-    return json.dumps(
-        {
-            "one_time": False,
-            "inline": False,
-            "buttons": [
-                [
-                    button("5 подходящих Kwork", COMMAND_KWORK),
-                    button("5 подходящих FL.ru", COMMAND_FL),
-                ],
-                [button("5 подходящих Profi.ru", COMMAND_PROFI)],
-                [button("← Главное меню", COMMAND_MENU)],
-            ],
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
 
 
 def project_keyboard_json(project_key: str, decision: str | None = None) -> str:
@@ -207,12 +165,7 @@ def project_keyboard_json(project_key: str, decision: str | None = None) -> str:
                         "✅ Откликнулся" if decision == "responded" else "Откликнулся",
                         COMMAND_RESPONDED,
                         "positive" if decision == "responded" else "secondary",
-                    ),
-                    button(
-                        "❌ Не подошло" if decision == "rejected" else "Не подошло",
-                        COMMAND_REJECTED,
-                        "negative" if decision == "rejected" else "secondary",
-                    ),
+                    )
                 ],
                 [button("✍ Написать отклик", COMMAND_WRITE_RESPONSE, "primary")],
             ],
@@ -486,25 +439,42 @@ def statistics_keyboard_json() -> str:
     )
 
 
-def responses_keyboard_json(projects: list[Project]) -> str:
+def responses_keyboard_json(responses: list[tuple[Project, str | None]]) -> str:
+    def action_button(
+        label: str,
+        command: str,
+        project_key: str,
+        color: str = "secondary",
+    ) -> dict[str, Any]:
+        return {
+            "action": {
+                "type": "callback",
+                "label": label,
+                "payload": json.dumps(
+                    {"command": command, "project_key": project_key},
+                    ensure_ascii=False,
+                ),
+            },
+            "color": color,
+        }
+
     buttons: list[list[dict[str, Any]]] = []
-    for index, project in enumerate(projects[:8], start=1):
+    for index, (project, outcome) in enumerate(responses[:8], start=1):
         buttons.append(
             [
-                {
-                    "action": {
-                        "type": "callback",
-                        "label": f"{index}. {_clip(project.title, 32)}",
-                        "payload": json.dumps(
-                            {
-                                "command": COMMAND_RESPONSE_PROJECT,
-                                "project_key": project.key,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                    "color": "secondary",
-                }
+                action_button(f"{index}. Открыть", COMMAND_RESPONSE_PROJECT, project.key),
+                action_button(
+                    "✅ Написал" if outcome == "client_replied" else "💬 Написал",
+                    COMMAND_CLIENT_REPLIED,
+                    project.key,
+                    "positive" if outcome == "client_replied" else "secondary",
+                ),
+                action_button(
+                    "✖ Другой",
+                    COMMAND_CLIENT_CHOSE_OTHER,
+                    project.key,
+                    "negative",
+                ),
             ]
         )
     buttons.append(json.loads(back_keyboard_json())["buttons"][0])
@@ -513,6 +483,15 @@ def responses_keyboard_json(projects: list[Project]) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+def format_active_responses(responses: list[tuple[Project, str | None]]) -> str:
+    items: list[str] = []
+    for index, (project, outcome) in enumerate(responses[:8], start=1):
+        source = "Kwork.ru" if project.source == "Kwork" else project.source
+        status = "💬 Клиент написал" if outcome == "client_replied" else "⏳ Ждём ответа"
+        items.append(f"{index}. {_clip(project.title, 100)} — {source}\n   {status}")
+    return "\n\n".join(items)
 
 
 def parse_command(message: dict[str, Any]) -> BotCommand | None:
@@ -602,18 +581,11 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
             filter_name=filter_commands[command_token],
         )
     text_commands = {
-        "последние 5 kwork": COMMAND_KWORK,
-        "последние 5 fl.ru": COMMAND_FL,
-        "последние 5 profi.ru": COMMAND_PROFI,
-        "последние 10 kwork": COMMAND_KWORK,
-        "последние 10 fl.ru": COMMAND_FL,
-        "последние 10 profi.ru": COMMAND_PROFI,
         "/menu": COMMAND_MENU,
         "меню": COMMAND_MENU,
         "настройки": COMMAND_SETTINGS,
         "статистика": COMMAND_STATISTICS,
         "отклики": COMMAND_RESPONSES,
-        "последние проекты": COMMAND_RECENT,
         "/filters": COMMAND_FILTER_SETTINGS,
         "/sources": COMMAND_SOURCE_SETTINGS,
     }
@@ -877,7 +849,7 @@ class VkBot:
         self._ui_message_id = None
         return deleted, failed
 
-    async def refresh_recent_project_keyboards(
+    async def refresh_project_keyboards(
         self, decision_for: Callable[[str], str | None], *, limit: int = 100
     ) -> None:
         """Migrate recently sent project cards to the current button states."""
@@ -916,13 +888,11 @@ class VkBot:
         self,
         project: Project,
         *,
-        test_view: bool = False,
-        decision: str | None = None,
         assessment: AiAssessment | None = None,
     ) -> None:
         await self.send_text(
-            format_message(project, test_view=test_view, assessment=assessment),
-            keyboard=project_keyboard_json(project.key, decision),
+            format_message(project, assessment=assessment),
+            keyboard=project_keyboard_json(project.key),
         )
 
     async def send_response_project(self, project: Project, *, client_replied: bool) -> None:
@@ -948,7 +918,7 @@ class VkBot:
     async def _get_long_poll_server(self) -> dict[str, Any]:
         response = await self._api("groups.getLongPollServer", group_id=await self._get_group_id())
         if not isinstance(response, dict):
-            raise RuntimeError("VK API не вернул Long Poll server")
+            raise TypeError("VK API не вернул Long Poll server")
         return response
 
     async def ensure_callback_events(self) -> None:

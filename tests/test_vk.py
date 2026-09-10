@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -7,9 +7,6 @@ from freelance_bot.models import AiAssessment, Project
 from freelance_bot.vk import (
     COMMAND_CONFIG_TEXTS,
     COMMAND_FILTER_SETTINGS,
-    COMMAND_FL,
-    COMMAND_KWORK,
-    COMMAND_RECENT,
     COMMAND_RESPONDED,
     COMMAND_REWRITE_RESPONSE,
     COMMAND_SET_CONFIG_TEXT,
@@ -19,33 +16,33 @@ from freelance_bot.vk import (
     VkApiError,
     VkBot,
     filter_settings_keyboard_json,
+    format_active_responses,
     format_message,
     keyboard_json,
     parse_command,
     project_keyboard_json,
-    recent_keyboard_json,
     response_variants_keyboard_json,
+    responses_keyboard_json,
     settings_keyboard_json,
     source_settings_keyboard_json,
     statistics_keyboard_json,
 )
 
 
-def test_keyboard_has_both_sources() -> None:
+def test_keyboard_has_main_sections() -> None:
     keyboard = json.loads(keyboard_json())
     assert keyboard["inline"] is False
-    assert keyboard["buttons"][0][0]["action"]["label"] == "🕘 Последние проекты"
-    assert keyboard["buttons"][1][0]["action"]["label"] == "⚙ Настройки"
-    assert keyboard["buttons"][2][0]["action"]["label"] == "📨 Отклики"
-    assert keyboard["buttons"][1][0]["action"]["type"] == "callback"
+    assert keyboard["buttons"][0][0]["action"]["label"] == "⚙ Настройки"
+    assert keyboard["buttons"][0][1]["action"]["label"] == "📊 Статистика"
+    assert keyboard["buttons"][1][0]["action"]["label"] == "📨 Отклики"
+    assert keyboard["buttons"][0][0]["action"]["type"] == "callback"
 
 
 def test_parse_button_payload_and_text() -> None:
-    assert parse_command({"payload": '{"command":"last_kwork"}'}).name == COMMAND_KWORK
-    assert parse_command({"text": "Последние 5 FL.ru"}).name == COMMAND_FL
-    assert parse_command({"text": "Последние 10 FL.ru"}).name == COMMAND_FL
     assert parse_command({"text": "Настройки"}).name == COMMAND_SETTINGS
-    assert parse_command({"text": "Последние проекты"}).name == COMMAND_RECENT
+    assert parse_command({"payload": '{"command":"last_kwork"}'}) is None
+    assert parse_command({"text": "Последние 5 FL.ru"}) is None
+    assert parse_command({"text": "Последние проекты"}) is None
     assert parse_command({"text": "неизвестная команда"}) is None
 
 
@@ -112,18 +109,13 @@ def test_parse_project_action() -> None:
 
 def test_project_decision_changes_button_state() -> None:
     neutral = json.loads(project_keyboard_json("Kwork:123"))["buttons"][0]
+    assert len(neutral) == 1
     assert neutral[0]["action"]["label"] == "Откликнулся"
     assert neutral[0]["color"] == "secondary"
-    assert neutral[1]["action"]["label"] == "Не подошло"
-    assert neutral[1]["color"] == "secondary"
 
     responded = json.loads(project_keyboard_json("Kwork:123", "responded"))["buttons"][0]
     assert responded[0]["action"]["label"] == "✅ Откликнулся"
     assert responded[0]["color"] == "positive"
-
-    rejected = json.loads(project_keyboard_json("Kwork:123", "rejected"))["buttons"][0]
-    assert rejected[1]["action"]["label"] == "❌ Не подошло"
-    assert rejected[1]["color"] == "negative"
 
     write_response = json.loads(project_keyboard_json("Kwork:123"))["buttons"][1][0]
     assert write_response["action"]["label"] == "✍ Написать отклик"
@@ -156,6 +148,46 @@ def test_generated_response_keyboard_has_revision_actions() -> None:
     assert event.response_action == "shorter"
 
 
+def test_responses_list_has_direct_outcome_actions() -> None:
+    waiting = Project("Kwork", "1", "Дизайн лендинга", "", "", "https://x", "Дизайн")
+    replied = Project(
+        "FL.ru",
+        "2",
+        "Интерфейс приложения",
+        "",
+        "",
+        "https://y",
+        "Дизайн",
+    )
+    responses = [(waiting, None), (replied, "client_replied")]
+
+    message = format_active_responses(responses)
+    keyboard = json.loads(responses_keyboard_json(responses))
+
+    assert "1. Дизайн лендинга — Kwork.ru\n   ⏳ Ждём ответа" in message
+    assert "2. Интерфейс приложения — FL.ru\n   💬 Клиент написал" in message
+    assert [button["action"]["label"] for button in keyboard["buttons"][0]] == [
+        "1. Открыть",
+        "💬 Написал",
+        "✖ Другой",
+    ]
+    assert keyboard["buttons"][1][1]["action"]["label"] == "✅ Написал"
+    assert keyboard["buttons"][1][1]["color"] == "positive"
+
+    replied_event = parse_command(
+        {"payload": keyboard["buttons"][0][1]["action"]["payload"]}
+    )
+    other_event = parse_command(
+        {"payload": keyboard["buttons"][0][2]["action"]["payload"]}
+    )
+    assert replied_event is not None
+    assert replied_event.name == "client_replied"
+    assert replied_event.project_key == waiting.key
+    assert other_event is not None
+    assert other_event.name == "client_chose_other"
+    assert other_event.project_key == waiting.key
+
+
 def test_project_message_uses_compact_format_and_display_timezone() -> None:
     project = Project(
         "Kwork",
@@ -165,9 +197,9 @@ def test_project_message_uses_compact_format_and_display_timezone() -> None:
         "до 500 ₽",
         "https://x",
         "Дизайн",
-        datetime(2026, 7, 17, 12, 30, tzinfo=timezone.utc),
+        datetime(2026, 7, 17, 12, 30, tzinfo=UTC),
     )
-    message = format_message(project, test_view=True)
+    message = format_message(project)
     assert message == ("Kwork.ru\n\nМакет\n💰 до 500 ₽\n🕒 17.07.2026 17:30\n\nhttps://x")
     assert "Описание" not in message
 
@@ -181,7 +213,7 @@ def test_project_message_includes_ai_assessment_but_not_response() -> None:
         "до 500 ₽",
         "https://x",
         "Дизайн",
-        datetime(2026, 7, 17, 12, 30, tzinfo=timezone.utc),
+        datetime(2026, 7, 17, 12, 30, tzinfo=UTC),
     )
     assessment = AiAssessment(
         project_key=project.key,
@@ -201,18 +233,6 @@ def test_project_message_includes_ai_assessment_but_not_response() -> None:
     assert "Почему:" not in message
     assert "Готовый отклик" not in message
     assert assessment.response_text not in message
-
-
-def test_recent_keyboard_requests_five_projects() -> None:
-    labels = [
-        button["action"]["label"]
-        for row in json.loads(recent_keyboard_json())["buttons"]
-        for button in row
-    ]
-    assert "5 подходящих Kwork" in labels
-    assert "5 подходящих FL.ru" in labels
-    assert "5 подходящих Profi.ru" in labels
-    assert not any("Последние 10" in label for label in labels)
 
 
 @pytest.mark.asyncio

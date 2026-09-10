@@ -272,12 +272,12 @@ def browser_runtime(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_manual_and_two_background_cycles_keep_live_browser(browser_runtime):
+async def test_repeated_background_cycles_keep_live_browser(browser_runtime):
     runtime, browser, context, page = browser_runtime
     source = ProfiSource(None, "login", "password")
     try:
         assert len(await source.fetch()) == 1
-        assert len(await source.fetch_for_manual_selection()) == 1
+        assert len(await source.fetch()) == 1
         assert len(await source.fetch()) == 1
         assert len(await source.fetch()) == 1
         runtime.chromium.launch.assert_awaited_once()
@@ -366,7 +366,7 @@ async def test_expired_auth_retries_once_in_same_browser(browser_runtime):
             return await evaluate(script, arg)
 
         page.evaluate.side_effect = expire_once
-        assert len(await source.fetch_for_manual_selection()) == 1
+        assert len(await source.fetch()) == 1
         assert source._authenticated
         assert source._auth_failures == 0
         runtime.chromium.launch.assert_awaited_once()
@@ -505,7 +505,7 @@ async def test_expired_session_gets_full_bounded_login_budget(browser_runtime):
 
 
 @pytest.mark.asyncio
-async def test_parallel_manual_and_background_requests_are_serialized(browser_runtime):
+async def test_parallel_background_requests_are_serialized(browser_runtime):
     _runtime, _browser, _context, page = browser_runtime
     source = ProfiSource(None, "login", "password")
     evaluate = page.evaluate.side_effect
@@ -524,7 +524,7 @@ async def test_parallel_manual_and_background_requests_are_serialized(browser_ru
 
     page.evaluate.side_effect = slow_request
     try:
-        results = await asyncio.gather(source.fetch(), source.fetch_for_manual_selection())
+        results = await asyncio.gather(source.fetch(), source.fetch())
         assert [len(result) for result in results] == [1, 1]
         assert maximum == 1
     finally:

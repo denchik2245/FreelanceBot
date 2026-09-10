@@ -8,8 +8,6 @@ LOGGER = logging.getLogger(__name__)
 ALL_CATEGORIES_LABEL = "Все категории"
 MAX_PAGES = 10
 MAX_PROJECT_AGE = timedelta(hours=24)
-MANUAL_CATEGORY_IDS = [24, 37]  # Веб и мобильный дизайн; Создание сайта
-MANUAL_MAX_PAGES = 10
 
 
 def _plain(value: Any) -> Any:
@@ -139,15 +137,6 @@ class KworkSource:
             max_pages=MAX_PAGES,
             cutoff=datetime.now(UTC) - MAX_PROJECT_AGE,
             feed_label="общая лента",
-        )
-
-    async def fetch_for_manual_selection(self) -> list[Project]:
-        """Fetch the deeper targeted feed used to assemble five suitable projects."""
-        return await self._fetch_projects(
-            categories_ids=MANUAL_CATEGORY_IDS,
-            max_pages=MANUAL_MAX_PAGES,
-            cutoff=None,
-            feed_label="целевая выдача веб-дизайна и создания сайтов",
         )
 
     async def close(self) -> None:

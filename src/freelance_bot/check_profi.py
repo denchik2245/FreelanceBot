@@ -36,8 +36,6 @@ async def check(
         try:
             projects = await source.fetch()
             print(f"Первичная загрузка: {len(projects)} карточек", flush=True)
-            manual = await source.fetch_for_manual_selection()
-            print(f"Ручная выдача: {len(manual)} карточек для отбора последних 5", flush=True)
             for cycle in range(1, cycles + 1):
                 await asyncio.sleep(interval)
                 projects = await source.fetch()
