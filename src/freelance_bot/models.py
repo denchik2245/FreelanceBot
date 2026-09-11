@@ -36,3 +36,5 @@ class AiAssessment:
     response_model: str
     summary: str = ""
     filter_revision: str = ""
+    decision: str = ""
+    evidence: str = ""

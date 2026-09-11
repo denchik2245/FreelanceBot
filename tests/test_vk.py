@@ -288,12 +288,11 @@ def test_source_settings_keyboard_reflects_notification_state() -> None:
     assert keyboard["buttons"][3][0]["action"]["label"] == "← К настройкам"
 
 
-def test_filter_settings_keyboard_only_has_score_and_budget() -> None:
+def test_filter_settings_keyboard_only_has_budget() -> None:
     keyboard = json.loads(filter_settings_keyboard_json(min_score=70, min_budget=10_000))
     labels = [row[0]["action"]["label"] for row in keyboard["buttons"]]
 
     assert labels == [
-        "🎯 AI-балл: 70",
         "💰 Мин. бюджет: 10 000 ₽",
         "← К настройкам",
     ]

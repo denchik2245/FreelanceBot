@@ -100,6 +100,12 @@ class ProjectStore:
                 "ALTER TABLE project_ai_assessments "
                 "ADD COLUMN filter_revision TEXT NOT NULL DEFAULT ''"
             )
+        for column in ("decision", "evidence"):
+            if column not in assessment_columns:
+                self._connection.execute(
+                    f"ALTER TABLE project_ai_assessments "
+                    f"ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+                )
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS project_ai_rejections (
@@ -263,8 +269,8 @@ class ProjectStore:
             """
             INSERT INTO project_ai_assessments(
                 project_key, suitable, score, reason, summary, response_text,
-                filter_model, response_model, filter_revision, analyzed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+                filter_model, response_model, filter_revision, decision, evidence, analyzed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
             ON CONFLICT(project_key) DO UPDATE SET
                 suitable = excluded.suitable,
                 score = excluded.score,
@@ -275,6 +281,8 @@ class ProjectStore:
                 filter_model = excluded.filter_model,
                 response_model = excluded.response_model,
                 filter_revision = excluded.filter_revision,
+                decision = excluded.decision,
+                evidence = excluded.evidence,
                 analyzed_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
             """,
             (
@@ -287,6 +295,8 @@ class ProjectStore:
                 assessment.filter_model,
                 assessment.response_model,
                 assessment.filter_revision,
+                assessment.decision,
+                assessment.evidence,
             ),
         )
         self._connection.commit()
@@ -295,7 +305,7 @@ class ProjectStore:
         row = self._connection.execute(
             """
             SELECT suitable, score, reason, summary, response_text, filter_model, response_model,
-                   filter_revision
+                   filter_revision, decision, evidence
             FROM project_ai_assessments
             WHERE project_key = ?
             """,
@@ -313,6 +323,8 @@ class ProjectStore:
             filter_model=str(row[5]),
             response_model=str(row[6]),
             filter_revision=str(row[7]),
+            decision=str(row[8]),
+            evidence=str(row[9]),
         )
 
     def mark_ai_rejected(self, project_key: str) -> None:

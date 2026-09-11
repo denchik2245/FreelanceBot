@@ -182,7 +182,7 @@ async def _monitor_projects(
                         assessment = store.get_ai_assessment(project.key)
                         if (
                             assessment is None
-                            or not assessment.summary
+                            or not assessment.decision
                             or assessment.filter_revision != advisor.filter_revision
                         ):
                             assessment = await advisor.assess(project)
@@ -194,14 +194,14 @@ async def _monitor_projects(
                     continue
                 if (
                     assessment is not None
-                    and assessment.score < project_filters.settings().min_ai_score
+                    and assessment.decision != "accept"
                 ):
                     store.mark_ai_rejected(project.key)
                     store.mark_seen(project.key, project.source)
                     LOGGER.info(
-                        "AI отфильтровал %s: %d/100 — %s",
+                        "AI отфильтровал %s: %s — %s",
                         project.key,
-                        assessment.score,
+                        assessment.decision,
                         assessment.reason,
                     )
                     continue
@@ -338,7 +338,7 @@ async def _listen_for_commands(
         )
         await show_notice(
             "🎯 Фильтры проектов\n\n"
-            f"Минимальный AI-балл — {current.min_ai_score}\n"
+            "AI отправляет только подтверждённые подходящие проекты.\n"
             f"Минимальный бюджет — {budget}\n\n"
             "Проекты без указанного бюджета не отбрасываются.",
             filter_settings_keyboard_json(
@@ -351,8 +351,8 @@ async def _listen_for_commands(
         current = project_filters.settings()
         instructions = {
             "score": (
-                f"Текущий минимальный AI-балл: {current.min_ai_score}\n\n"
-                "Отправьте, например: /score 75"
+                "Баллы больше не используются. AI отправляет только accept; "
+                "критерии меняются в разделе AI-тексты → Промпт отбора."
             ),
             "budget": (
                 f"Текущий минимальный бюджет: {current.min_budget} ₽\n\n"
@@ -384,7 +384,7 @@ async def _listen_for_commands(
             f"{preview}\n\n"
             f"Чтобы заменить, отправьте одним сообщением:\n"
             f"/set {key}\nНОВЫЙ ТЕКСТ\n\n"
-            f"Для длинного текста прикрепите UTF-8 .txt к сообщению /set {key}.",
+            f"Для длинного текста прикрепите UTF-8 .txt или .json к сообщению /set {key}.",
             config_texts_keyboard_json(),
         )
 
@@ -434,9 +434,8 @@ async def _listen_for_commands(
             try:
                 value = (event.content or "").strip()
                 if event.filter_name == "score":
-                    project_filters.set_min_ai_score(int(value))
-                    if advisor is not None:
-                        advisor.set_min_score(int(value))
+                    await show_filter_editor("score")
+                    return
                 elif event.filter_name == "budget":
                     normalized = value.replace(" ", "")
                     project_filters.set_min_budget(0 if normalized == "off" else int(normalized))
@@ -679,6 +678,7 @@ async def run(settings: Settings) -> None:
         profile_path=settings.ai_profile_path,
         filter_prompt_path=settings.ai_filter_prompt_path,
         response_prompt_path=settings.ai_response_prompt_path,
+        portfolio_path=settings.ai_portfolio_path,
     )
     profi_source: ProfiSource | None = None
     try:
@@ -687,6 +687,7 @@ async def run(settings: Settings) -> None:
                 profile_path=settings.ai_profile_path,
                 filter_prompt_path=settings.ai_filter_prompt_path,
                 response_prompt_path=settings.ai_response_prompt_path,
+                portfolio_path=settings.ai_portfolio_path,
                 credentials=settings.gigachat_credentials,
                 scope=settings.gigachat_scope,
                 base_url=settings.gigachat_base_url,
@@ -694,14 +695,13 @@ async def run(settings: Settings) -> None:
                 filter_model=settings.gigachat_filter_model,
                 response_model=settings.gigachat_response_model,
                 min_score=settings.ai_min_score,
+                verify_accepted=settings.ai_verify_accepted,
             )
             await advisor.__aenter__()
-            advisor.set_min_score(project_filters.settings().min_ai_score)
             LOGGER.info(
-                "AI включён: фильтр=%s, отклики=%s, порог=%d",
+                "AI включён: фильтр=%s, отклики=%s, отправка только accept",
                 settings.gigachat_filter_model,
                 settings.gigachat_response_model,
-                project_filters.settings().min_ai_score,
             )
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             fl_source = FlSource(session)

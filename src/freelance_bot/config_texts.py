@@ -6,6 +6,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from freelance_bot.portfolio import parse_portfolio
 
 MAX_CONFIG_TEXT_BYTES = 100_000
 
@@ -18,7 +19,7 @@ class EditableConfigText:
 
 
 class ConfigTextManager:
-    """Read and atomically replace the three AI text files exposed in VK."""
+    """Read and atomically replace AI prompts, profile and validated portfolio exposed in VK."""
 
     def __init__(
         self,
@@ -26,12 +27,17 @@ class ConfigTextManager:
         profile_path: Path,
         filter_prompt_path: Path,
         response_prompt_path: Path,
+        portfolio_path: Path | None = None,
     ) -> None:
         self._items = {
             "profile": EditableConfigText("profile", "Профиль исполнителя", profile_path),
             "filter": EditableConfigText("filter", "Промпт отбора", filter_prompt_path),
             "response": EditableConfigText("response", "Промпт отклика", response_prompt_path),
         }
+        if portfolio_path is not None:
+            self._items["portfolio"] = EditableConfigText(
+                "portfolio", "Портфолио (JSON)", portfolio_path
+            )
 
     def items(self) -> tuple[EditableConfigText, ...]:
         return tuple(self._items.values())
@@ -54,6 +60,8 @@ class ConfigTextManager:
         normalized = text.strip()
         if not normalized:
             raise ValueError("AI-текст не может быть пустым")
+        if key == "portfolio":
+            parse_portfolio(normalized)
         encoded = normalized.encode("utf-8")
         if len(encoded) > MAX_CONFIG_TEXT_BYTES:
             raise ValueError("AI-текст больше 100 КБ")

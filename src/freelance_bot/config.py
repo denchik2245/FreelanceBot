@@ -41,6 +41,8 @@ class Settings:
     gigachat_ca_bundle_file: Path | None
     gigachat_filter_model: str
     gigachat_response_model: str
+    ai_portfolio_path: Path = Path("config/portfolio.json")
+    ai_verify_accepted: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -76,6 +78,8 @@ class Settings:
             send_existing_on_first_run=_bool("SEND_EXISTING_ON_FIRST_RUN"),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             ai_enabled=ai_enabled,
+            ai_portfolio_path=Path(os.getenv("AI_PORTFOLIO_PATH", "config/portfolio.json")),
+            ai_verify_accepted=_bool("AI_VERIFY_ACCEPTED", True),
             ai_min_score=ai_min_score,
             ai_profile_path=Path(os.getenv("AI_PROFILE_PATH", "config/freelancer_profile.txt")),
             ai_filter_prompt_path=Path(

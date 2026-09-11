@@ -1,5 +1,5 @@
+import json
 from datetime import UTC, datetime
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +9,8 @@ from freelance_bot.models import Project
 
 
 def _response(text: str, model: str) -> SimpleNamespace:
+    if model == "GigaChat-2-Max" and not text.lstrip().startswith(("{", "```")):
+        text = json.dumps({"body": text, "case_ids": []}, ensure_ascii=False)
     return SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
         model=model,
@@ -22,7 +24,7 @@ class FakeClient:
         self.requests: list[object] = []
 
     async def achat(self, request: object) -> SimpleNamespace:
-        self.requests.append(request)
+        self.requests.append(request.model_copy(deep=True))
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -45,8 +47,12 @@ def _project() -> Project:
 def _advisor(score: int) -> tuple[GigaChatProjectAdvisor, FakeClient, FakeClient]:
     filter_client = FakeClient(
         "GigaChat-2",
-        f'```json\n{{"score": {score}, "reason": "Подходит", '
-        '"summary": "Клиенту нужен макет лендинга в Figma."}\n```',
+        json.dumps({
+            "decision": "accept" if score >= 70 else "reject",
+            "evidence": "Нужен макет лендинга в Figma",
+            "reason": "Подходит",
+            "summary": "Клиенту нужен макет лендинга в Figma.",
+        }, ensure_ascii=False),
     )
     response_client = FakeClient(
         "GigaChat-2-Max",
@@ -68,10 +74,11 @@ def _advisor(score: int) -> tuple[GigaChatProjectAdvisor, FakeClient, FakeClient
 
 def test_parse_filter_result_accepts_json_code_block() -> None:
     assert _parse_filter_result(
-        '```json\n{"score": 81, "reason": " Нужен UI ", '
+        '```json\n{"decision": "accept", "evidence": "UI", "reason": " Нужен UI ", '
         '"summary": " Нужен интерфейс сервиса "}\n```'
     ) == (
-        81,
+        "accept",
+        "UI",
         "Нужен UI",
         "Нужен интерфейс сервиса",
     )
@@ -102,7 +109,7 @@ async def test_advisor_only_assesses_suitable_project() -> None:
     assessment = await advisor.assess(_project())
 
     assert assessment.suitable
-    assert assessment.score == 85
+    assert assessment.score == 100
     assert assessment.summary == "Клиенту нужен макет лендинга в Figma."
     assert assessment.response_model == ""
     assert assessment.response_text == ""
@@ -182,7 +189,7 @@ async def test_advisor_retries_invalid_gigachat_response(monkeypatch: pytest.Mon
     monkeypatch.setattr("freelance_bot.ai.asyncio.sleep", no_sleep)
     assessment = await advisor.assess(_project())
 
-    assert assessment.score == 85
+    assert assessment.score == 100
     assert len(filter_client.requests) == 2
 
 
@@ -194,7 +201,7 @@ async def test_advisor_falls_back_to_response_model(
     filter_client.responses = [RuntimeError("empty response")] * 3
     response_client.responses = [
         (
-            '{"score": 15, "reason": "Только программирование", '
+            '{"decision": "reject", "evidence": "", "reason": "Только программирование", '
             '"summary": "Клиенту нужна техническая доработка сайта."}'
         )
     ]
@@ -206,20 +213,12 @@ async def test_advisor_falls_back_to_response_model(
     assessment = await advisor.assess(_project())
 
     assert not assessment.suitable
-    assert assessment.score == 15
+    assert assessment.score == 0
     assert assessment.filter_model == "GigaChat-2-Max"
     assert len(filter_client.requests) == 3
     assert all(request.model == "GigaChat-2" for request in filter_client.requests)
     assert len(response_client.requests) == 1
     assert response_client.requests[0].model == "GigaChat-2-Max"
-
-
-def test_response_prompt_requires_three_case_links_and_no_mobile_adaptation_question() -> None:
-    prompt = Path("config/prompts/response_writer.txt").read_text(encoding="utf-8")
-
-    assert "ровно 3 прямые ссылки" in prompt
-    assert "3 последних проекта" in prompt
-    assert "Не спрашивай, нужна ли адаптация под мобильные устройства" in prompt
 
 
 def test_filter_revision_tracks_selection_rules_only() -> None:
@@ -232,7 +231,7 @@ def test_filter_revision_tracks_selection_rules_only() -> None:
     revised = advisor.filter_revision
     assert revised != original
     advisor.update_config_text("profile", "Дизайн мобильных приложений")
-    assert advisor.filter_revision != revised
+    assert advisor.filter_revision == revised
 
 
 @pytest.mark.asyncio

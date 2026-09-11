@@ -345,7 +345,6 @@ def filter_settings_keyboard_json(*, min_score: int, min_budget: int) -> str:
             "one_time": False,
             "inline": False,
             "buttons": [
-                [button(f"🎯 AI-балл: {min_score}", "score")],
                 [button(f"💰 Мин. бюджет: {budget}", "budget")],
                 [back],
             ],
@@ -373,6 +372,7 @@ def config_texts_keyboard_json() -> str:
         [button("👤 Профиль исполнителя", "profile")],
         [button("🔎 Промпт отбора", "filter")],
         [button("✍ Промпт отклика", "response")],
+        [button("🗂 Портфолио (JSON)", "portfolio")],
         [
             {
                 "action": {
@@ -517,7 +517,8 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
                 else None,
                 str(message["event_id"]) if message.get("event_id") else None,
                 config_key=(
-                    str(config_key) if config_key in {"profile", "filter", "response"} else None
+                    str(config_key)
+                    if config_key in {"profile", "filter", "response", "portfolio"} else None
                 ),
                 response_action=(
                     str(response_action) if response_action in RESPONSE_ACTIONS else None
@@ -531,7 +532,7 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
     command_parts = first_line.strip().casefold().split(maxsplit=1)
     if command_parts and command_parts[0] in {"/config", "/set"}:
         key = command_parts[1] if len(command_parts) == 2 else None
-        if key is not None and key not in {"profile", "filter", "response"}:
+        if key is not None and key not in {"profile", "filter", "response", "portfolio"}:
             return None
         if command_parts[0] == "/config":
             return BotCommand(
@@ -547,7 +548,7 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
         for attachment in message.get("attachments", []):
             document = attachment.get("doc") if isinstance(attachment, dict) else None
             if isinstance(document, dict) and str(document.get("title", "")).lower().endswith(
-                ".txt"
+                (".txt", ".json")
             ):
                 document_url = str(document.get("url", "")) or None
                 document_name = str(document.get("title", "")) or None

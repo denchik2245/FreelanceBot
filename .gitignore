@@ -11,4 +11,5 @@ __pycache__/
 *.pyc
 data/*.sqlite3
 data/*.sqlite3-*
+data/eval-*.json
 
