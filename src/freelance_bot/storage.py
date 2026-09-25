@@ -138,6 +138,14 @@ class ProjectStore:
         )
         self._connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS seen_mail_notifications (
+                message_key TEXT PRIMARY KEY,
+                notified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self._connection.execute(
+            """
             INSERT OR IGNORE INTO state(name, value)
             VALUES ('statistics_started_at', CURRENT_TIMESTAMP)
             """
@@ -633,6 +641,20 @@ class ProjectStore:
     def set_state(self, name: str, value: str) -> None:
         self._connection.execute(
             "INSERT OR REPLACE INTO state(name, value) VALUES (?, ?)", (name, value)
+        )
+        self._connection.commit()
+
+    def is_mail_notification_seen(self, message_key: str) -> bool:
+        row = self._connection.execute(
+            "SELECT 1 FROM seen_mail_notifications WHERE message_key = ?",
+            (message_key,),
+        ).fetchone()
+        return row is not None
+
+    def mark_mail_notification_seen(self, message_key: str) -> None:
+        self._connection.execute(
+            "INSERT OR IGNORE INTO seen_mail_notifications(message_key) VALUES (?)",
+            (message_key,),
         )
         self._connection.commit()
 

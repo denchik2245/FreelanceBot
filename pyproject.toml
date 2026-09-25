@@ -23,6 +23,7 @@ dev = [
 freelance-bot = "freelance_bot.main:main"
 gigachat-check = "freelance_bot.check_gigachat:main"
 profi-check = "freelance_bot.check_profi:main"
+fl-mail-check = "freelance_bot.check_fl_mail:main"
 
 [build-system]
 requires = ["hatchling"]

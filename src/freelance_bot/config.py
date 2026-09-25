@@ -26,6 +26,9 @@ class Settings:
     kwork_password: str
     profi_login: str
     profi_password: str
+    fl_gmail_address: str
+    fl_gmail_app_password: str
+    fl_mail_poll_interval_seconds: int
     poll_interval_seconds: int
     database_path: Path
     send_existing_on_first_run: bool
@@ -64,6 +67,15 @@ class Settings:
         profi_password = os.getenv("PROFI_PASSWORD", "").strip()
         if bool(profi_login) != bool(profi_password):
             raise ValueError("PROFI_LOGIN и PROFI_PASSWORD должны быть заданы вместе")
+        fl_gmail_address = os.getenv("FL_GMAIL_ADDRESS", "").strip()
+        fl_gmail_app_password = os.getenv("FL_GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
+        if bool(fl_gmail_address) != bool(fl_gmail_app_password):
+            raise ValueError(
+                "FL_GMAIL_ADDRESS и FL_GMAIL_APP_PASSWORD должны быть заданы вместе"
+            )
+        fl_mail_interval = int(os.getenv("FL_MAIL_POLL_INTERVAL_SECONDS", "60"))
+        if fl_mail_interval < 30:
+            raise ValueError("FL_MAIL_POLL_INTERVAL_SECONDS должен быть не меньше 30")
         ca_bundle = os.getenv("GIGACHAT_CA_BUNDLE_FILE", "").strip()
         return cls(
             vk_group_token=_required("VK_GROUP_TOKEN"),
@@ -73,6 +85,9 @@ class Settings:
             kwork_password=_required("KWORK_PASSWORD"),
             profi_login=profi_login,
             profi_password=profi_password,
+            fl_gmail_address=fl_gmail_address,
+            fl_gmail_app_password=fl_gmail_app_password,
+            fl_mail_poll_interval_seconds=fl_mail_interval,
             poll_interval_seconds=interval,
             database_path=Path(os.getenv("DATABASE_PATH", "data/bot.sqlite3")),
             send_existing_on_first_run=_bool("SEND_EXISTING_ON_FIRST_RUN"),

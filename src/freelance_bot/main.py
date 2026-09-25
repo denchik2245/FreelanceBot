@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from freelance_bot.ai import GigaChatProjectAdvisor
 from freelance_bot.config import Settings
 from freelance_bot.config_texts import ConfigTextManager
+from freelance_bot.fl_mail import GmailFlMailbox, format_fl_notification
 from freelance_bot.keywords import matches_project_keywords
 from freelance_bot.models import Project
 from freelance_bot.project_filters import ProjectFilterManager
@@ -57,6 +58,9 @@ from freelance_bot.vk import (
 
 LOGGER = logging.getLogger(__name__)
 MAX_PROJECT_AGE = timedelta(hours=24)
+FL_MAIL_UID_VALIDITY_STATE = "fl_mail:uid_validity"
+FL_MAIL_LAST_UID_STATE = "fl_mail:last_uid"
+FL_MAIL_ERROR_STATE = "fl_mail:error_notified"
 
 
 def _keyword_candidates(source: str, projects: list[Project]) -> list[Project]:
@@ -219,6 +223,62 @@ async def _monitor_projects(
                     source,
                 )
         await asyncio.sleep(settings.poll_interval_seconds)
+
+
+def _stored_int(store: ProjectStore, name: str) -> int | None:
+    value = store.get_state(name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        LOGGER.warning("Некорректное числовое состояние %s сброшено", name)
+        return None
+
+
+async def _monitor_fl_mail(
+    settings: Settings,
+    store: ProjectStore,
+    mailbox: GmailFlMailbox,
+    bot: VkBot,
+) -> None:
+    while True:
+        try:
+            batch = await mailbox.fetch(
+                last_uid=_stored_int(store, FL_MAIL_LAST_UID_STATE),
+                uid_validity=_stored_int(store, FL_MAIL_UID_VALIDITY_STATE),
+            )
+            delivered = 0
+            for notification in batch.notifications:
+                if store.is_mail_notification_seen(notification.key):
+                    continue
+                await bot.send_text(format_fl_notification(notification))
+                store.mark_mail_notification_seen(notification.key)
+                delivered += 1
+            store.set_state(FL_MAIL_UID_VALIDITY_STATE, str(batch.uid_validity))
+            store.set_state(FL_MAIL_LAST_UID_STATE, str(batch.last_uid))
+            if batch.initialized:
+                LOGGER.info(
+                    "Gmail FL.ru подключён; текущие письма сохранены без уведомлений"
+                )
+            elif delivered:
+                LOGGER.info("Отправлено уведомлений о сообщениях FL.ru: %d", delivered)
+            if store.get_state(FL_MAIL_ERROR_STATE) == "1":
+                await bot.send_text("✅ Проверка сообщений FL.ru через Gmail восстановлена.")
+                store.set_state(FL_MAIL_ERROR_STATE, "0")
+        except Exception:
+            LOGGER.exception("Не удалось проверить уведомления FL.ru в Gmail")
+            if store.get_state(FL_MAIL_ERROR_STATE) != "1":
+                try:
+                    await bot.send_text(
+                        "⚠️ Не удалось проверить Gmail для сообщений FL.ru. "
+                        "Проверьте адрес, пароль приложения и журнал бота."
+                    )
+                except Exception:
+                    LOGGER.exception("Не удалось отправить в VK ошибку проверки Gmail")
+                else:
+                    store.set_state(FL_MAIL_ERROR_STATE, "1")
+        await asyncio.sleep(settings.fl_mail_poll_interval_seconds)
 
 
 def _format_statistics(store: ProjectStore) -> str:
@@ -727,6 +787,16 @@ async def run(settings: Settings) -> None:
             fl_lock = asyncio.Lock()
             kwork_lock = asyncio.Lock()
             profi_lock = asyncio.Lock()
+            fl_mailbox = (
+                GmailFlMailbox(settings.fl_gmail_address, settings.fl_gmail_app_password)
+                if settings.fl_gmail_address and settings.fl_gmail_app_password
+                else None
+            )
+            if fl_mailbox is None:
+                LOGGER.warning(
+                    "Уведомления о сообщениях FL.ru отключены: заполните "
+                    "FL_GMAIL_ADDRESS и FL_GMAIL_APP_PASSWORD в .env"
+                )
             if store.get_state("vk_keyboard_version") != "12":
                 try:
                     await bot.clear_persistent_keyboard()
@@ -754,7 +824,7 @@ async def run(settings: Settings) -> None:
                         "Не удалось установить постоянную клавиатуру VK",
                         exc_info=True,
                     )
-            await asyncio.gather(
+            background_tasks = [
                 _monitor_projects(
                     settings,
                     store,
@@ -781,7 +851,12 @@ async def run(settings: Settings) -> None:
                     config_texts,
                     project_filters,
                 ),
-            )
+            ]
+            if fl_mailbox is not None:
+                background_tasks.append(
+                    _monitor_fl_mail(settings, store, fl_mailbox, bot)
+                )
+            await asyncio.gather(*background_tasks)
     finally:
         if profi_source is not None:
             await profi_source.close()

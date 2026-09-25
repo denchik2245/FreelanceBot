@@ -54,3 +54,29 @@ def test_profi_credentials_must_be_configured_together(
 
     with pytest.raises(ValueError, match="должны быть заданы вместе"):
         Settings.from_env()
+
+
+def test_gmail_settings_are_loaded_and_app_password_spaces_are_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("FL_GMAIL_ADDRESS", "freelancer@gmail.com")
+    monkeypatch.setenv("FL_GMAIL_APP_PASSWORD", "abcd efgh ijkl mnop")
+    monkeypatch.setenv("FL_MAIL_POLL_INTERVAL_SECONDS", "45")
+
+    settings = Settings.from_env()
+
+    assert settings.fl_gmail_address == "freelancer@gmail.com"
+    assert settings.fl_gmail_app_password == "abcdefghijklmnop"
+    assert settings.fl_mail_poll_interval_seconds == 45
+
+
+def test_gmail_credentials_must_be_configured_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("FL_GMAIL_ADDRESS", "freelancer@gmail.com")
+    monkeypatch.delenv("FL_GMAIL_APP_PASSWORD", raising=False)
+
+    with pytest.raises(ValueError, match="FL_GMAIL_ADDRESS"):
+        Settings.from_env()
