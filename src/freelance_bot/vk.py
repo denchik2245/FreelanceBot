@@ -197,11 +197,7 @@ def response_variants_keyboard_json(project_key: str) -> str:
         {
             "one_time": False,
             "inline": True,
-            "buttons": [
-                [button("🔄 Другой вариант", "different"), button("✂ Короче", "shorter")],
-                [button("💼 Деловой", "formal"), button("🙂 Более живой", "friendly")],
-                [button("❓ Добавить вопрос", "question")],
-            ],
+            "buttons": [[button("🔄 Другой вариант", "different")]],
         },
         ensure_ascii=False,
         separators=(",", ":"),

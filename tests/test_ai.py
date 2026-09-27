@@ -4,7 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from freelance_bot.ai import GigaChatProjectAdvisor, _parse_filter_result, _project_context
+from freelance_bot.ai import (
+    GigaChatProjectAdvisor,
+    _format_response_paragraphs,
+    _parse_filter_result,
+    _project_context,
+)
 from freelance_bot.models import Project
 
 
@@ -71,6 +76,29 @@ def _advisor(score: int) -> tuple[GigaChatProjectAdvisor, FakeClient, FakeClient
     advisor._response_prompt = "Напиши персональный отклик."
     advisor._stack = None
     return advisor, filter_client, response_client
+
+
+def test_long_response_is_split_at_sentence_boundaries() -> None:
+    sentences = [
+        "Здравствуйте!",
+        "Я изучил описание задачи и вижу, что важна понятная структура главной страницы.",
+        "Сначала предложу последовательность блоков и покажу, как объяснить сложную услугу.",
+        "Затем подготовлю макет страницы и проверю его на мобильном экране.",
+        "У меня есть подходящий проект, где я решал похожую задачу для сложной услуги.",
+        "Пришлите список разделов и материалы, чтобы я уточнил состав первой страницы.",
+    ]
+    response = " ".join(sentences)
+
+    formatted = _format_response_paragraphs(response)
+
+    assert "\n\n" in formatted
+    assert formatted.replace("\n\n", " ") == response
+    assert all(paragraph.endswith(("!", ".")) for paragraph in formatted.split("\n\n"))
+
+
+def test_existing_response_paragraphs_are_preserved() -> None:
+    response = "Здравствуйте!\n\nПредложу структуру.\n\nПришлите материалы."
+    assert _format_response_paragraphs(response) == response
 
 
 def test_parse_filter_result_accepts_json_code_block() -> None:

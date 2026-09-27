@@ -89,6 +89,31 @@ def _response_text(response: Any) -> str:
     raise RuntimeError("GigaChat вернул ответ без текста")
 
 
+def _format_response_paragraphs(body: str) -> str:
+    body = re.sub(r"\r\n?", "\n", body).strip()
+    if "\n\n" in body:
+        return re.sub(r"\n{3,}", "\n\n", body)
+    if "\n" in body:
+        return "\n\n".join(line.strip() for line in body.splitlines() if line.strip())
+    if len(body) <= 320:
+        return body
+
+    # The prompt asks for logical paragraphs. If the model still returns one block,
+    # split only at sentence boundaries so VK does not display a wall of text.
+    sentences = re.split(r"(?<=[.!?])\s+(?=[А-ЯЁA-Z])", body)
+    paragraphs: list[str] = []
+    current = ""
+    for sentence in sentences:
+        if current and len(current) >= 150 and len(current) + len(sentence) + 1 > 280:
+            paragraphs.append(current)
+            current = sentence
+        else:
+            current = f"{current} {sentence}".strip()
+    if current:
+        paragraphs.append(current)
+    return "\n\n".join(paragraphs)
+
+
 def _parse_filter_result(text: str) -> tuple[str, str, str]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -543,6 +568,7 @@ class GigaChatProjectAdvisor:
             except (ValueError, TypeError):
                 issues = ["Верни JSON с body (текст без ссылок) и case_ids (массив разрешённых ID)"]
             if not issues:
+                body = _format_response_paragraphs(body)
                 # The model chooses placement and explains relevance; the application inserts
                 # only catalogued facts and exact URLs so it cannot invent portfolio evidence.
                 for key in selected:

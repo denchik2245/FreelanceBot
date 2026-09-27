@@ -122,22 +122,16 @@ def test_project_decision_changes_button_state() -> None:
     assert write_response["color"] == "primary"
 
 
-def test_generated_response_keyboard_has_revision_actions() -> None:
+def test_generated_response_keyboard_has_one_revision_action() -> None:
     keyboard = json.loads(response_variants_keyboard_json("Kwork:123"))
     buttons = [button for row in keyboard["buttons"] for button in row]
     labels = [button["action"]["label"] for button in buttons]
 
     assert keyboard["inline"] is True
-    assert labels == [
-        "🔄 Другой вариант",
-        "✂ Короче",
-        "💼 Деловой",
-        "🙂 Более живой",
-        "❓ Добавить вопрос",
-    ]
+    assert labels == ["🔄 Другой вариант"]
     event = parse_command(
         {
-            "payload": buttons[1]["action"]["payload"],
+            "payload": buttons[0]["action"]["payload"],
             "conversation_message_id": 55,
             "event_id": "event-2",
         }
@@ -145,7 +139,7 @@ def test_generated_response_keyboard_has_revision_actions() -> None:
     assert event is not None
     assert event.name == COMMAND_REWRITE_RESPONSE
     assert event.project_key == "Kwork:123"
-    assert event.response_action == "shorter"
+    assert event.response_action == "different"
 
 
 def test_responses_list_has_direct_outcome_actions() -> None:
