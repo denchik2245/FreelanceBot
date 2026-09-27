@@ -31,8 +31,9 @@ def test_ai_settings_are_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.ai_min_score == 82
     assert settings.ai_filter_prompt_path.as_posix() == "config/prompts/project_filter.txt"
     assert settings.ai_response_prompt_path.as_posix() == "config/prompts/response_writer.txt"
-    assert settings.gigachat_filter_model == "GigaChat-2"
-    assert settings.gigachat_response_model == "GigaChat-2-Max"
+    assert settings.gigachat_filter_model == "GigaChat-2-Pro"
+    assert settings.gigachat_filter_fallback_model == "GigaChat-2-Max"
+    assert settings.gigachat_response_model == "GigaChat-3-Ultra"
 
 
 def test_ai_rejects_empty_model(monkeypatch: pytest.MonkeyPatch) -> None:

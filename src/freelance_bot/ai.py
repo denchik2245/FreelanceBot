@@ -17,6 +17,7 @@ from gigachat.models import Chat, JsonSchemaResponseFormat, Messages, MessagesRo
 
 from freelance_bot.models import AiAssessment, Project
 from freelance_bot.portfolio import (
+    load_portfolio_documents,
     parse_portfolio,
     requested_case_count,
     response_issues,
@@ -26,16 +27,21 @@ from freelance_bot.portfolio import (
 LOGGER = logging.getLogger(__name__)
 MAX_PROJECT_TEXT_LENGTH = 6_000
 RETRY_ATTEMPTS = 3
+
+
+class InsufficientPortfolioCasesError(ValueError):
+    """The client's explicit request exceeds the available relevant portfolio cases."""
+
+
 FILTER_RESPONSE_FORMAT = JsonSchemaResponseFormat(
     schema={
         "type": "object",
         "properties": {
             "decision": {"type": "string", "enum": ["accept", "reject", "unclear"]},
-            "evidence": {"type": "string"},
             "reason": {"type": "string", "minLength": 1},
             "summary": {"type": "string"},
         },
-        "required": ["decision", "evidence", "reason", "summary"],
+        "required": ["decision", "reason", "summary"],
         "additionalProperties": False,
     },
     strict=True,
@@ -83,7 +89,7 @@ def _response_text(response: Any) -> str:
     raise RuntimeError("GigaChat вернул ответ без текста")
 
 
-def _parse_filter_result(text: str) -> tuple[str, str, str, str]:
+def _parse_filter_result(text: str) -> tuple[str, str, str]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
@@ -97,22 +103,22 @@ def _parse_filter_result(text: str) -> tuple[str, str, str, str]:
     if start < 0 or end <= start:
         raise ValueError("GigaChat не вернул JSON с оценкой проекта")
     payload = json.loads(cleaned[start : end + 1])
-    fields = {"decision", "evidence", "reason", "summary"}
+    fields = {"decision", "reason", "summary"}
     if not isinstance(payload, dict) or set(payload) != fields:
-        raise ValueError("Нужны decision, evidence, reason, summary")
+        raise ValueError("Нужны decision, reason, summary")
     if any(not isinstance(value, str) for value in payload.values()):
         raise ValueError("Поля решения должны быть строками")
-    decision, evidence, reason, summary = (
+    decision, reason, summary = (
         " ".join(payload[key].split())
-        for key in ("decision", "evidence", "reason", "summary")
+        for key in ("decision", "reason", "summary")
     )
     if decision not in {"accept", "reject", "unclear"}:
         raise ValueError("Неизвестное решение отбора")
     if not reason:
         raise ValueError("GigaChat не объяснил оценку проекта")
-    if decision == "accept" and (not summary or not evidence):
+    if decision == "accept" and not summary:
         raise ValueError("GigaChat не описал задачу клиента")
-    return decision, evidence, reason, summary if decision == "accept" else ""
+    return decision, reason, summary if decision == "accept" else ""
 
 
 def _project_context(project: Project) -> str:
@@ -140,12 +146,14 @@ class GigaChatProjectAdvisor:
         base_url: str,
         ca_bundle_file: Path | None,
         filter_model: str,
+        filter_fallback_model: str,
         response_model: str,
         min_score: int,
         profile: str,
         filter_prompt: str,
         response_prompt: str,
         portfolio: str = "[]",
+        portfolio_documents: dict[str, dict[str, str]] | None = None,
         verify_accepted: bool = True,
     ) -> None:
         if not profile.strip():
@@ -164,14 +172,24 @@ class GigaChatProjectAdvisor:
         if ca_bundle_file is not None:
             common["ca_bundle_file"] = str(ca_bundle_file)
         self._filter_client = GigaChat(model=filter_model, **common)
+        self._filter_fallback_client = GigaChat(model=filter_fallback_model, **common)
         self._response_client = GigaChat(model=response_model, **common)
         self._filter_model = filter_model
+        self._filter_fallback_model = filter_fallback_model
         self._response_model = response_model
         self._min_score = min_score
         self._profile = profile.strip()
         self._filter_prompt = filter_prompt.strip()
         self._response_prompt = response_prompt.strip()
         self._portfolio = parse_portfolio(portfolio)
+        self._portfolio_documents = portfolio_documents or {}
+        if portfolio_documents is not None and {
+            case["id"]: case["url"] for case in self._portfolio
+        } != {
+            case_id: document["url"]
+            for case_id, document in self._portfolio_documents.items()
+        }:
+            raise ValueError("Карточки портфолио не совпадают с JSON-каталогом")
         self._verify_accepted = verify_accepted
         self._stack: AsyncExitStack | None = None
 
@@ -183,7 +201,8 @@ class GigaChatProjectAdvisor:
     def filter_revision(self) -> str:
         """Identify the rules used to assess a project, including live config edits."""
         rules = json.dumps(
-            ["decision-v3", self._filter_prompt, self._filter_model, self._response_model,
+            ["decision-v6", self._filter_prompt, self._filter_model,
+             getattr(self, "_filter_fallback_model", self._response_model),
              getattr(self, "_verify_accepted", False)],
             ensure_ascii=False,
         )
@@ -195,7 +214,16 @@ class GigaChatProjectAdvisor:
         if not value:
             raise ValueError("AI-текст не может быть пустым")
         if key == "portfolio":
-            self._portfolio = parse_portfolio(value)
+            updated = parse_portfolio(value)
+            documents = getattr(self, "_portfolio_documents", {})
+            if documents and {case["id"]: case["url"] for case in updated} != {
+                case_id: document["url"] for case_id, document in documents.items()
+            }:
+                raise ValueError(
+                    "Набор кейсов и ссылки не совпадают с Markdown-карточками. "
+                    "Обновите config/portfolio-index.md и config/portfolio-cases на сервере."
+                )
+            self._portfolio = updated
             return
         attributes = {
             "profile": "_profile",
@@ -229,11 +257,17 @@ class GigaChatProjectAdvisor:
             except OSError as error:
                 raise RuntimeError(f"Не удалось прочитать {description} {path}: {error}") from error
 
+        portfolio_text = read_text(portfolio_path, "портфолио") if portfolio_path else "[]"
+        documents = (
+            load_portfolio_documents(portfolio_path, parse_portfolio(portfolio_text))
+            if portfolio_path else None
+        )
         return cls(
             profile=read_text(profile_path, "профиль исполнителя"),
             filter_prompt=read_text(filter_prompt_path, "промпт отбора проектов"),
             response_prompt=read_text(response_prompt_path, "промпт написания отклика"),
-            portfolio=read_text(portfolio_path, "портфолио") if portfolio_path else "[]",
+            portfolio=portfolio_text,
+            portfolio_documents=documents,
             **kwargs,
         )
 
@@ -242,6 +276,7 @@ class GigaChatProjectAdvisor:
         await stack.__aenter__()
         try:
             await stack.enter_async_context(self._filter_client)
+            await stack.enter_async_context(self._filter_fallback_client)
             await stack.enter_async_context(self._response_client)
         except BaseException:
             await stack.aclose()
@@ -278,34 +313,36 @@ class GigaChatProjectAdvisor:
 
         async def request_filter(
             client: GigaChat, requested_model: str
-        ) -> tuple[str, str, str, str, str]:
+        ) -> tuple[str, str, str, str]:
             # Keep the model in the payload as well as in the client settings so
             # SDK defaults can never silently route the request to another tier.
             request = filter_request.model_copy(update={"model": requested_model}, deep=True)
             response = await client.achat(request)
-            decision, evidence, reason, summary = _parse_filter_result(_response_text(response))
+            decision, reason, summary = _parse_filter_result(_response_text(response))
             actual_model = str(getattr(response, "model", "") or requested_model)
-            return decision, evidence, reason, summary, actual_model
+            return decision, reason, summary, actual_model
 
+        fallback_model = getattr(self, "_filter_fallback_model", self._response_model)
+        fallback_client = getattr(self, "_filter_fallback_client", self._response_client)
         used_fallback = False
         try:
-            decision, evidence, reason, summary, used_model = await _with_retry(
+            decision, reason, summary, used_model = await _with_retry(
                 lambda: request_filter(self._filter_client, self._filter_model),
                 f"AI-оценка {project.key}",
             )
         except Exception:
-            if self._response_model == self._filter_model:
+            if fallback_model == self._filter_model:
                 raise
             used_fallback = True
             LOGGER.warning(
                 "Модель оценки %s не оценила %s; пробую резервную %s",
                 self._filter_model,
                 project.key,
-                self._response_model,
+                fallback_model,
                 exc_info=True,
             )
-            decision, evidence, reason, summary, used_model = await _with_retry(
-                lambda: request_filter(self._response_client, self._response_model),
+            decision, reason, summary, used_model = await _with_retry(
+                lambda: request_filter(fallback_client, fallback_model),
                 f"резервная AI-оценка {project.key}",
             )
         source_text = " ".join(html.unescape(re.sub(
@@ -314,22 +351,17 @@ class GigaChatProjectAdvisor:
         if (decision == "accept" and source_text
                 and len(source_text) <= MAX_PROJECT_TEXT_LENGTH
                 and getattr(self, "_verify_accepted", False) and not used_fallback
-                and self._response_model != self._filter_model):
-            # Independent decision: do not anchor the verifier with Lite's explanation.
-            decision, evidence, reason, summary, used_model = await _with_retry(
-                lambda: request_filter(self._response_client, self._response_model),
+                and fallback_model != self._filter_model):
+            # Independent decision: do not anchor the verifier with Pro's explanation.
+            decision, reason, summary, used_model = await _with_retry(
+                lambda: request_filter(fallback_client, fallback_model),
                 f"проверка кандидата {project.key}",
             )
-        # A quote must occur in the input, not in a fabricated explanation or profile.
-        match = re.search(re.escape(evidence), f"{project.title}\n{source_text}", re.IGNORECASE)
-        if evidence and match:
-            evidence = match.group(0)  # Restore source capitalization, never accept paraphrases.
         if decision == "accept" and (
             not source_text or len(source_text) > MAX_PROJECT_TEXT_LENGTH
-            or not match
         ):
             decision, summary = "unclear", ""
-            reason = "Описание отсутствует/обрезано или цитата не найдена в заказе"
+            reason = "Описание отсутствует или обрезано"
         suitable = decision == "accept"
         score = 100 if suitable else 0  # Compatibility with historical database rows only.
         assessment = AiAssessment(
@@ -343,7 +375,7 @@ class GigaChatProjectAdvisor:
             summary=summary,
             filter_revision=filter_revision,
             decision=decision,
-            evidence=evidence,
+            evidence="",
         )
         LOGGER.info(
             "AI-отбор %s моделью %s: %s, подходит=%s — %s",
@@ -362,13 +394,30 @@ class GigaChatProjectAdvisor:
         previous_response: str = "",
         variation: str | None = None,
     ) -> str:
-        cases = select_cases(project, getattr(self, "_portfolio", []))
+        documents = getattr(self, "_portfolio_documents", {})
+        index_terms = {
+            case_id: document["search_text"] for case_id, document in documents.items()
+        }
+        cases = select_cases(project, getattr(self, "_portfolio", []), index_terms)
         requested_count = requested_case_count(project)
         if requested_count == 0:
             cases = []
-        required_count = min(requested_count, len(cases)) if requested_count is not None else 0
+        if requested_count is not None and requested_count > len(cases):
+            raise InsufficientPortfolioCasesError(
+                f"Заказчик просит {requested_count} примера работ, "
+                f"а подходящих подтверждённых кейсов найдено {len(cases)}. "
+                "Добавьте кейсы в портфолио или подготовьте отклик вручную."
+            )
+        # Full cards are substantial; keep a small shortlist unless the client asks for more.
+        cases = cases[:max(3, requested_count or 0)]
+        required_count = requested_count if requested_count is not None else 0
         maximum_count = required_count if requested_count is not None else min(2, len(cases))
-        case_facts = [{k: v for k, v in case.items() if k != "url"} for case in cases]
+        case_facts = []
+        for case in cases:
+            facts = {k: v for k, v in case.items() if k != "url"}
+            if case["id"] in documents:
+                facts["verified_card"] = documents[case["id"]]["card"]
+            case_facts.append(facts)
         system_content = (
             f"{self._response_prompt}\n\nФАКТЫ ОБ ИСПОЛНИТЕЛЕ:\n{self._profile}"
             f"\n\nКЕЙСЫ-КАНДИДАТЫ (выбери уместные, можно не использовать):\n"
@@ -482,32 +531,25 @@ class GigaChatProjectAdvisor:
                         f"В case_ids должно быть от {required_count} до {maximum_count} "
                         "уникальных разрешённых ID; это требование клиента к примерам"
                     )
-                if any(key in body for key in case_map):
-                    issues.append("Убери служебные ID из body; указывай их только в case_ids")
-                if re.search(
-                            r"(?:среди моих|мо[йияе]|моих|моим|моём|моего).{0,35}"
-                            r"(?:проект|кейс|портфолио|опыт)", body, re.IGNORECASE,
-                        ):
+                markers = re.findall(r"\{\{CASE:([a-z0-9-]+)\}\}", body)
+                if markers != selected:
                     issues.append(
-                        "Убери из body описание собственных кейсов и их свойств; "
-                        "портфолио добавляется приложением, оставь ID только в case_ids"
+                        "Для каждого ID из case_ids вставь в body ровно один маркер "
+                        "{{CASE:id}} в том же порядке; лишние маркеры запрещены"
                     )
+                body_without_markers = re.sub(r"\{\{CASE:[a-z0-9-]+\}\}", "", body)
+                if any(key in body_without_markers for key in case_map):
+                    issues.append("Убери служебные ID вне маркеров {{CASE:id}}")
             except (ValueError, TypeError):
                 issues = ["Верни JSON с body (текст без ссылок) и case_ids (массив разрешённых ID)"]
             if not issues:
-                # Captions and links are factual data, never model-authored case descriptions.
-                block = "\n".join(
-                    case_map[key]["name"]
-                    + (f" — {case_map[key]['work']}"
-                       if "не уточнён" not in case_map[key]["work"] else "")
-                    + f"\n{case_map[key]['url']}"
-                    for key in selected
-                )
-                if not block:
-                    return body
-                lead, separator, last = body.rpartition("\n\n")
-                return (f"{lead}\n\nПримеры работ:\n{block}\n\n{last}" if separator
-                        else f"{body}\n\nПримеры работ:\n{block}")
+                # The model chooses placement and explains relevance; the application inserts
+                # only catalogued facts and exact URLs so it cannot invent portfolio evidence.
+                for key in selected:
+                    case = case_map[key]
+                    replacement = f"{case['name']}: {case['url']}\n{case['work']}"
+                    body = body.replace(f"{{{{CASE:{key}}}}}", replacement)
+                return body
             if attempt == 0:
                 response_request.messages.append(Messages(
                     role=MessagesRole.ASSISTANT, content=text or "(пустой ответ)"
@@ -515,6 +557,6 @@ class GigaChatProjectAdvisor:
                 response_request.messages.append(Messages(
                     role=MessagesRole.USER,
                     content="Исправь отклик: " + "; ".join(issues)
-                    + ". Верни только полный исправленный текст.",
+                    + ". Верни только полный исправленный JSON с полями body и case_ids.",
                 ))
         raise ValueError("Отклик не прошёл проверку: " + "; ".join(issues))

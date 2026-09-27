@@ -2,6 +2,7 @@
 
 import json
 import re
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from freelance_bot.models import Project
@@ -18,6 +19,8 @@ def parse_portfolio(text: str) -> list[dict[str, str]]:
             raise ValueError("Кейс: нужны id, name, product, work, platform, url")
         if any(not isinstance(v, str) or not v.strip() for v in case.values()):
             raise ValueError("Поля кейса должны быть непустыми строками")
+        if re.fullmatch(r"[a-z0-9-]+", case["id"]) is None:
+            raise ValueError("ID кейса может содержать только a-z, 0-9 и дефис")
         if case["id"] in ids:
             raise ValueError("ID кейсов должны быть уникальными")
         ids.add(case["id"])
@@ -27,10 +30,72 @@ def parse_portfolio(text: str) -> list[dict[str, str]]:
     return data
 
 
-def select_cases(project: Project, cases: list[dict[str, str]]) -> list[dict[str, str]]:
+def load_portfolio_documents(
+    portfolio_path: Path, cases: list[dict[str, str]]
+) -> dict[str, dict[str, str]]:
+    """Load the skill index and verified case cards alongside portfolio.json."""
+    index_path = portfolio_path.with_name("portfolio-index.md")
+    cards_dir = portfolio_path.with_name("portfolio-cases")
+    try:
+        index = index_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise RuntimeError(f"Не удалось прочитать индекс портфолио {index_path}") from error
+
+    rows: dict[str, tuple[str, str]] = {}
+    for line in index.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) != 6 or not re.fullmatch(r"`[a-z0-9-]+`", cells[0]):
+            continue
+        case_id = cells[0].strip("`")
+        card_link = re.fullmatch(r"\[Открыть\]\(cases/([a-z0-9-]+)\.md\)", cells[5])
+        if not card_link or card_link[1] != case_id or case_id in rows:
+            raise ValueError(f"Некорректная строка индекса для кейса {case_id}")
+        rows[case_id] = (" ".join(cells[1:4]), cells[4])
+
+    catalog = {case["id"]: case for case in cases}
+    if rows.keys() != catalog.keys():
+        raise ValueError("ID в portfolio-index.md и portfolio.json должны совпадать")
+
+    documents: dict[str, dict[str, str]] = {}
+    for case_id, case in catalog.items():
+        card_path = cards_dir / f"{case_id}.md"
+        try:
+            card = card_path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise RuntimeError(f"Не удалось прочитать карточку кейса {card_path}") from error
+        card_id = re.search(r"(?m)^- ID: `([a-z0-9-]+)`\s*$", card)
+        card_url = re.search(r"(?m)^- Публичная работа: (https://\S+)\s*$", card)
+        if not card_id or card_id[1] != case_id or not card_url or card_url[1] != case["url"]:
+            raise ValueError(f"ID или публичная ссылка в карточке {case_id} не совпадает с JSON")
+        # The application inserts the verified URL; the model should see facts, not links.
+        safe_card = re.sub(
+            r"(?m)^- (?:Публичная работа|Сайт из кейса):[^\n]*\n?", "", card
+        ).strip()
+        documents[case_id] = {
+            "search_text": rows[case_id][0],
+            "card": safe_card,
+            "url": case["url"],
+        }
+    return documents
+
+
+def select_cases(
+    project: Project,
+    cases: list[dict[str, str]],
+    index_terms: dict[str, str] | None = None,
+) -> list[dict[str, str]]:
     """Rank a small factual shortlist, leaving final relevance judgement to the writer."""
     text = f"{project.title} {project.description}".casefold()
-    tilda = bool(re.search(r"tilda|тильд", text))
+    tilda_mentioned = bool(re.search(r"tilda|тильд", text))
+    tilda_ruled_out = bool(re.search(
+        r"(?:tilda|тильд\w*)(?:\s+\w+){0,2}\s+не\s+"
+        r"(?:подход|нужн|использ|выбран|планир)\w*"
+        r"|(?:tilda|тильд\w*)\s+исключ\w*"
+        r"|(?:без|вместо|не\s+на|не\s+в|не\s+хотим|не\s+нужн\w*|"
+        r"отказались\s+от|не\s+будем\s+использовать)\s+(?:tilda|тильд\w*)",
+        text,
+    ))
+    tilda = tilda_mentioned and not tilda_ruled_out
     def kind(value: str) -> str:
         if re.search(r"приложени|веб-сервис|кабинет|интерфейс", value):
             return "interface"
@@ -43,20 +108,21 @@ def select_cases(project: Project, cases: list[dict[str, str]]) -> list[dict[str
         return "unknown"
 
     target_kind = kind(text)
-    ignored = {"компа", "сайта", "сайто", "ленди", "дизай", "макет", "figma", "проек",
-               "страни", "нужен", "нужны", "корпо", "много", "магаз", "работ"}
-    tokens = {word[:5] for word in re.findall(r"[а-яa-z]{5,}", text)} - ignored
+    ignored = {"комп", "сайт", "ленд", "диза", "маке", "figm", "прое",
+               "стра", "нуже", "корп", "мног", "мага", "рабо"}
+    tokens = {word[:4] for word in re.findall(r"[а-яa-z]{5,}", text)} - ignored
 
     def rank(case: dict[str, str]) -> int:
-        facts = f"{case['name']} {case['product']}".casefold()
-        case_kind = kind(facts)
+        summary = f"{case['name']} {case['product']}".casefold()
+        facts = f"{summary} {(index_terms or {}).get(case['id'], '')}".casefold()
+        case_kind = kind(summary)
         # Generic Figma experience cannot prove mobile-app or e-commerce experience.
         if target_kind in {"interface", "store"} and case_kind != target_kind:
             return 0
-        overlap = len(tokens & {word[:5] for word in re.findall(r"[а-яa-z]{5,}", facts)})
+        overlap = len(tokens & {word[:4] for word in re.findall(r"[а-яa-z]{5,}", facts)})
         same_kind = target_kind != "unknown" and case_kind == target_kind
-        return (overlap * 10 + (5 if same_kind else 0)
-                + (30 if tilda and case["platform"] == "Tilda" else 0))
+        return (overlap * 10 + (20 if same_kind else 0)
+                + (30 if tilda and case["platform"].startswith("Tilda") else 0))
 
     # No arbitrary fallback links. Lexical matches are candidates, not proof of niche experience.
     ranked = sorted(cases, key=rank, reverse=True)
@@ -82,6 +148,14 @@ def response_issues(text: str, allowed_urls: set[str], finish_reason: object) ->
         issues.append("Содержимое ссылок не передано: убери утверждение, что уже изучил материалы")
     if text.count("?") > 1:
         issues.append("Оставь не больше одного уточняющего вопроса")
+    if "—" in text or "–" in text:
+        issues.append("Замени длинное или среднее тире на обычный дефис с пробелами")
+    if re.search(
+        r"\bне\s+(?:просто|только)\b.{0,80}\b(?:а|но\s+и)\b",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        issues.append("Убери риторическое противопоставление «не просто/не только X, а Y»")
     if re.search(
         r"успешн\w*\s+(?:проект|опыт)|недавно.{0,25}(?:проект|заверш)|"
         r"(?:завершал|выполнял).{0,25}проект|"
@@ -90,6 +164,13 @@ def response_issues(text: str, allowed_urls: set[str], finish_reason: object) ->
         text, re.IGNORECASE,
     ):
         issues.append("Убери неподтверждённые успехи, недавние работы и обещание начать сегодня/завтра")
+    if re.search(
+        r"готов\s+обсудить\s+(?:тз|техническ\w*\s+задан\w*)|"
+        r"буду\s+рад\s+сотрудничеств\w*|современн\w*\s+и\s+продающ\w*\s+дизайн",
+        text,
+        re.IGNORECASE,
+    ):
+        issues.append("Убери шаблонную фразу и замени её конкретным действием по проекту")
     return issues
 
 

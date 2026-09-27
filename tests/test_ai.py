@@ -49,7 +49,6 @@ def _advisor(score: int) -> tuple[GigaChatProjectAdvisor, FakeClient, FakeClient
         "GigaChat-2",
         json.dumps({
             "decision": "accept" if score >= 70 else "reject",
-            "evidence": "Нужен макет лендинга в Figma",
             "reason": "Подходит",
             "summary": "Клиенту нужен макет лендинга в Figma.",
         }, ensure_ascii=False),
@@ -61,8 +60,10 @@ def _advisor(score: int) -> tuple[GigaChatProjectAdvisor, FakeClient, FakeClient
     )
     advisor = object.__new__(GigaChatProjectAdvisor)
     advisor._filter_client = filter_client
+    advisor._filter_fallback_client = response_client
     advisor._response_client = response_client
     advisor._filter_model = "GigaChat-2"
+    advisor._filter_fallback_model = "GigaChat-2-Max"
     advisor._response_model = "GigaChat-2-Max"
     advisor._min_score = 70
     advisor._profile = "Веб-дизайнер, работаю в Figma."
@@ -74,11 +75,10 @@ def _advisor(score: int) -> tuple[GigaChatProjectAdvisor, FakeClient, FakeClient
 
 def test_parse_filter_result_accepts_json_code_block() -> None:
     assert _parse_filter_result(
-        '```json\n{"decision": "accept", "evidence": "UI", "reason": " Нужен UI ", '
+        '```json\n{"decision": "accept", "reason": " Нужен UI ", '
         '"summary": " Нужен интерфейс сервиса "}\n```'
     ) == (
         "accept",
-        "UI",
         "Нужен UI",
         "Нужен интерфейс сервиса",
     )
@@ -201,7 +201,7 @@ async def test_advisor_falls_back_to_response_model(
     filter_client.responses = [RuntimeError("empty response")] * 3
     response_client.responses = [
         (
-            '{"decision": "reject", "evidence": "", "reason": "Только программирование", '
+            '{"decision": "reject", "reason": "Только программирование", '
             '"summary": "Клиенту нужна техническая доработка сайта."}'
         )
     ]

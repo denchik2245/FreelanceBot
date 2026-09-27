@@ -6,7 +6,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from freelance_bot.portfolio import parse_portfolio
+from freelance_bot.portfolio import load_portfolio_documents, parse_portfolio
 
 MAX_CONFIG_TEXT_BYTES = 100_000
 
@@ -61,7 +61,9 @@ class ConfigTextManager:
         if not normalized:
             raise ValueError("AI-текст не может быть пустым")
         if key == "portfolio":
-            parse_portfolio(normalized)
+            cases = parse_portfolio(normalized)
+            if item.path.with_name("portfolio-index.md").exists():
+                load_portfolio_documents(item.path, cases)
         encoded = normalized.encode("utf-8")
         if len(encoded) > MAX_CONFIG_TEXT_BYTES:
             raise ValueError("AI-текст больше 100 КБ")

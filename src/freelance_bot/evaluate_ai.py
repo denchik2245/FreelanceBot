@@ -41,6 +41,7 @@ async def evaluate(args: argparse.Namespace) -> None:
         credentials=settings.gigachat_credentials, scope=settings.gigachat_scope,
         base_url=settings.gigachat_base_url, ca_bundle_file=settings.gigachat_ca_bundle_file,
         filter_model=settings.gigachat_filter_model,
+        filter_fallback_model=settings.gigachat_filter_fallback_model,
         response_model=settings.gigachat_response_model, min_score=70,
         verify_accepted=settings.ai_verify_accepted,
     )
@@ -56,8 +57,8 @@ async def evaluate(args: argparse.Namespace) -> None:
             try:
                 if not args.responses_only:
                     result = await advisor.assess(project)
-                    row.update(decision=result.decision, evidence=result.evidence,
-                               reason=result.reason, model=result.filter_model)
+                    row.update(decision=result.decision, reason=result.reason,
+                               model=result.filter_model)
                 if args.responses_only or (args.responses and case.get("expected") == "accept"):
                     row["response"] = await advisor.generate_response(project)
             except Exception as error:  # noqa: BLE001 - report a failed evaluation without secrets

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import aiohttp
 from dotenv import load_dotenv
 
-from freelance_bot.ai import GigaChatProjectAdvisor
+from freelance_bot.ai import GigaChatProjectAdvisor, InsufficientPortfolioCasesError
 from freelance_bot.config import Settings
 from freelance_bot.config_texts import ConfigTextManager
 from freelance_bot.fl_mail import GmailFlMailbox, format_fl_notification
@@ -86,6 +86,22 @@ def _is_fresh(project: Project, *, now: datetime | None = None) -> bool:
     return current - MAX_PROJECT_AGE <= published <= current + timedelta(hours=1)
 
 
+def _assessment_input_changed(previous: Project | None, current: Project) -> bool:
+    if previous is None:
+        return True
+    return (
+        previous.title,
+        previous.description,
+        previous.category,
+        previous.price,
+    ) != (
+        current.title,
+        current.description,
+        current.category,
+        current.price,
+    )
+
+
 async def _fetch_sources(
     fl_source: FlSource,
     kwork_source: KworkSource,
@@ -141,8 +157,11 @@ async def _monitor_projects(
         for source, projects in projects_by_source.items():
             first_source_run = not store.is_source_initialized(source)
             for project in projects:
+                previous_assessment = None
                 if store.is_project_seen(project):
-                    continue
+                    previous_assessment = store.get_ai_assessment(project.key)
+                    if previous_assessment is None or previous_assessment.decision != "unclear":
+                        continue
                 if project.publication_id and store.is_seen(project.canonical_key):
                     LOGGER.info(
                         "Обнаружена повторная публикация: %s — %s (%s)",
@@ -181,13 +200,16 @@ async def _monitor_projects(
                     continue
                 assessment = None
                 try:
+                    previous_project = store.get_project(project.key)
                     store.remember_project(project)
                     if advisor is not None:
-                        assessment = store.get_ai_assessment(project.key)
+                        assessment = previous_assessment or store.get_ai_assessment(project.key)
                         if (
                             assessment is None
                             or not assessment.decision
                             or assessment.filter_revision != advisor.filter_revision
+                            or (assessment.decision == "unclear" and
+                                _assessment_input_changed(previous_project, project))
                         ):
                             assessment = await advisor.assess(project)
                             store.remember_ai_assessment(assessment)
@@ -196,10 +218,15 @@ async def _monitor_projects(
                     # Never send an unchecked project. Leave it unseen so the next
                     # polling cycle can retry after a temporary GigaChat failure.
                     continue
-                if (
-                    assessment is not None
-                    and assessment.decision != "accept"
-                ):
+                if assessment is not None and assessment.decision == "unclear":
+                    LOGGER.info(
+                        "AI оставил %s без решения; повторная оценка при изменении заказа "
+                        "или правил: %s",
+                        project.key,
+                        assessment.reason,
+                    )
+                    continue
+                if assessment is not None and assessment.decision != "accept":
                     store.mark_ai_rejected(project.key)
                     store.mark_seen(project.key, project.source)
                     LOGGER.info(
@@ -605,6 +632,9 @@ async def _listen_for_commands(
                         response_text,
                         advisor.response_model,
                     )
+                except InsufficientPortfolioCasesError as error:
+                    await bot.send_text(f"⚠️ {error}", keyboard=False)
+                    return
                 except Exception:
                     LOGGER.exception("Не удалось создать AI-отклик для %s", project.key)
                     await bot.send_text(
@@ -753,14 +783,16 @@ async def run(settings: Settings) -> None:
                 base_url=settings.gigachat_base_url,
                 ca_bundle_file=settings.gigachat_ca_bundle_file,
                 filter_model=settings.gigachat_filter_model,
+                filter_fallback_model=settings.gigachat_filter_fallback_model,
                 response_model=settings.gigachat_response_model,
                 min_score=settings.ai_min_score,
                 verify_accepted=settings.ai_verify_accepted,
             )
             await advisor.__aenter__()
             LOGGER.info(
-                "AI включён: фильтр=%s, отклики=%s, отправка только accept",
+                "AI включён: фильтр=%s, резерв=%s, отклики=%s, отправка только accept",
                 settings.gigachat_filter_model,
+                settings.gigachat_filter_fallback_model,
                 settings.gigachat_response_model,
             )
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:

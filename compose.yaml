@@ -6,6 +6,9 @@ services:
     volumes:
       - ./data:/app/data
       - ./config:/app/config
+      - ./src:/app/src:ro
+    environment:
+      PYTHONPATH: /app/src
     logging:
       driver: json-file
       options:

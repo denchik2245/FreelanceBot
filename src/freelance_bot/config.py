@@ -43,6 +43,7 @@ class Settings:
     gigachat_base_url: str
     gigachat_ca_bundle_file: Path | None
     gigachat_filter_model: str
+    gigachat_filter_fallback_model: str
     gigachat_response_model: str
     ai_portfolio_path: Path = Path("config/portfolio.json")
     ai_verify_accepted: bool = True
@@ -59,9 +60,18 @@ class Settings:
         gigachat_credentials = os.getenv("GIGACHAT_CREDENTIALS", "").strip()
         if ai_enabled and not gigachat_credentials:
             raise ValueError("AI_ENABLED=true, но не задан обязательный GIGACHAT_CREDENTIALS")
-        gigachat_filter_model = os.getenv("GIGACHAT_FILTER_MODEL", "GigaChat-2").strip()
-        gigachat_response_model = os.getenv("GIGACHAT_RESPONSE_MODEL", "GigaChat-2-Max").strip()
-        if ai_enabled and (not gigachat_filter_model or not gigachat_response_model):
+        gigachat_filter_model = os.getenv("GIGACHAT_FILTER_MODEL", "GigaChat-2-Pro").strip()
+        gigachat_filter_fallback_model = os.getenv(
+            "GIGACHAT_FILTER_FALLBACK_MODEL", "GigaChat-2-Max"
+        ).strip()
+        gigachat_response_model = os.getenv(
+            "GIGACHAT_RESPONSE_MODEL", "GigaChat-3-Ultra"
+        ).strip()
+        if ai_enabled and (
+            not gigachat_filter_model
+            or not gigachat_filter_fallback_model
+            or not gigachat_response_model
+        ):
             raise ValueError("AI-модели GigaChat не могут быть пустыми")
         profi_login = os.getenv("PROFI_LOGIN", "").strip()
         profi_password = os.getenv("PROFI_PASSWORD", "").strip()
@@ -108,5 +118,6 @@ class Settings:
             gigachat_base_url=os.getenv("GIGACHAT_BASE_URL", "https://api.giga.chat/v1").strip(),
             gigachat_ca_bundle_file=Path(ca_bundle) if ca_bundle else None,
             gigachat_filter_model=gigachat_filter_model,
+            gigachat_filter_fallback_model=gigachat_filter_fallback_model,
             gigachat_response_model=gigachat_response_model,
         )

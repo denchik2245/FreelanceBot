@@ -82,11 +82,13 @@ rsync -az --delete \
   --exclude '.venv/' \
   --exclude '**/__pycache__/' \
   ./ root@SERVER_IP:/opt/freelance-bot/
-ssh root@SERVER_IP 'cd /opt/freelance-bot && docker compose up -d --build'
+ssh root@SERVER_IP 'cd /opt/freelance-bot && docker compose up -d'
 ```
 
 `.env` и `data/` при обновлении исключены специально: серверные секреты и база не должны
 перезаписываться локальными файлами.
+Код `src/` подключён к контейнеру только для чтения, поэтому обычное обновление кода не
+пересобирает образ с Chromium. При изменении зависимостей используйте `--build`.
 
 ## Проверка и резервная копия
 

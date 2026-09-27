@@ -11,7 +11,7 @@ async def check() -> None:
     credentials = os.getenv("GIGACHAT_CREDENTIALS", "").strip()
     if not credentials:
         raise ValueError("Не задан GIGACHAT_CREDENTIALS")
-    model = os.getenv("GIGACHAT_FILTER_MODEL", "GigaChat-2").strip()
+    model = os.getenv("GIGACHAT_FILTER_MODEL", "GigaChat-2-Pro").strip()
     if not model:
         raise ValueError("GIGACHAT_FILTER_MODEL пуст")
     ca_bundle = os.getenv("GIGACHAT_CA_BUNDLE_FILE", "").strip()
