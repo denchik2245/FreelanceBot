@@ -54,10 +54,25 @@ class ProjectStore:
                 outcome TEXT CHECK(outcome IN ('client_replied', 'client_chose_other')),
                 decision_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 outcome_at TEXT,
+                stats_counted INTEGER NOT NULL DEFAULT 1,
+                hidden_from_responses INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(project_key) REFERENCES project_catalog(project_key)
             )
             """
         )
+        feedback_columns = {
+            str(row[1])
+            for row in self._connection.execute("PRAGMA table_info(project_feedback)").fetchall()
+        }
+        if "stats_counted" not in feedback_columns:
+            self._connection.execute(
+                "ALTER TABLE project_feedback ADD COLUMN stats_counted INTEGER NOT NULL DEFAULT 1"
+            )
+        if "hidden_from_responses" not in feedback_columns:
+            self._connection.execute(
+                "ALTER TABLE project_feedback "
+                "ADD COLUMN hidden_from_responses INTEGER NOT NULL DEFAULT 0"
+            )
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS project_ai_assessments (
@@ -362,7 +377,8 @@ class ProjectStore:
             self._connection.execute(
                 """
                 UPDATE project_feedback
-                SET decision = ?, outcome = NULL, decision_at = CURRENT_TIMESTAMP, outcome_at = NULL
+                SET decision = ?, outcome = NULL, decision_at = CURRENT_TIMESTAMP,
+                    outcome_at = NULL, stats_counted = 1, hidden_from_responses = 0
                 WHERE project_key = ?
                 """,
                 (decision, project_key),
@@ -384,13 +400,18 @@ class ProjectStore:
             return None
         self._connection.execute(
             """
-            INSERT INTO project_feedback(project_key, decision, outcome, decision_at, outcome_at)
-            VALUES (?, ?, NULL, CURRENT_TIMESTAMP, NULL)
+            INSERT INTO project_feedback(
+                project_key, decision, outcome, decision_at, outcome_at, stats_counted,
+                hidden_from_responses
+            )
+            VALUES (?, ?, NULL, CURRENT_TIMESTAMP, NULL, 1, 0)
             ON CONFLICT(project_key) DO UPDATE SET
                 decision = excluded.decision,
                 outcome = NULL,
                 decision_at = CURRENT_TIMESTAMP,
-                outcome_at = NULL
+                outcome_at = NULL,
+                stats_counted = 1,
+                hidden_from_responses = 0
             """,
             (project_key, decision),
         )
@@ -410,6 +431,23 @@ class ProjectStore:
         )
         self._connection.commit()
         return cursor.rowcount > 0
+
+    def delete_response(self, project_key: str) -> bool:
+        cursor = self._connection.execute(
+            """
+            UPDATE project_feedback SET hidden_from_responses = 1
+            WHERE project_key = ? AND decision = 'responded' AND hidden_from_responses = 0
+            """,
+            (project_key,),
+        )
+        self._connection.commit()
+        return cursor.rowcount > 0
+
+    def reset_feedback_statistics(self) -> None:
+        self._connection.execute(
+            "UPDATE project_feedback SET stats_counted = 0 WHERE decision = 'responded'"
+        )
+        self._connection.commit()
 
     def get_project(self, project_key: str) -> Project | None:
         row = self._connection.execute(
@@ -455,6 +493,7 @@ class ProjectStore:
             """
             SELECT decision, outcome, COUNT(*)
             FROM project_feedback
+            WHERE stats_counted = 1
             GROUP BY decision, outcome
             """
         ).fetchall()
@@ -471,6 +510,7 @@ class ProjectStore:
             FROM project_feedback AS f
             JOIN project_catalog AS c USING(project_key)
             WHERE f.decision = 'responded'
+              AND f.hidden_from_responses = 0
               AND (f.outcome IS NULL OR f.outcome = 'client_replied')
             ORDER BY f.decision_at DESC
             LIMIT ?

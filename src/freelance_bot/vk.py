@@ -17,6 +17,7 @@ COMMAND_MENU = "menu"
 COMMAND_SETTINGS = "settings"
 COMMAND_STATISTICS = "statistics"
 COMMAND_CLEAR_STATISTICS = "clear_statistics"
+COMMAND_CLEAR_RESPONSE_STATISTICS = "clear_response_statistics"
 COMMAND_CLEAR_CHAT = "clear_chat"
 COMMAND_RESPONSES = "responses"
 COMMAND_TOGGLE_KWORK = "toggle_kwork"
@@ -27,6 +28,7 @@ COMMAND_WRITE_RESPONSE = "write_response"
 COMMAND_CLIENT_REPLIED = "client_replied"
 COMMAND_CLIENT_CHOSE_OTHER = "client_chose_other"
 COMMAND_RESPONSE_PROJECT = "response_project"
+COMMAND_DELETE_RESPONSE = "delete_response"
 COMMAND_CONFIG_TEXTS = "config_texts"
 COMMAND_VIEW_CONFIG_TEXT = "view_config_text"
 COMMAND_SET_CONFIG_TEXT = "set_config_text"
@@ -43,6 +45,7 @@ ALL_COMMANDS = {
     COMMAND_SETTINGS,
     COMMAND_STATISTICS,
     COMMAND_CLEAR_STATISTICS,
+    COMMAND_CLEAR_RESPONSE_STATISTICS,
     COMMAND_CLEAR_CHAT,
     COMMAND_RESPONSES,
     COMMAND_TOGGLE_KWORK,
@@ -53,6 +56,7 @@ ALL_COMMANDS = {
     COMMAND_CLIENT_REPLIED,
     COMMAND_CLIENT_CHOSE_OTHER,
     COMMAND_RESPONSE_PROJECT,
+    COMMAND_DELETE_RESPONSE,
     COMMAND_CONFIG_TEXTS,
     COMMAND_VIEW_CONFIG_TEXT,
     COMMAND_SET_CONFIG_TEXT,
@@ -471,8 +475,21 @@ def responses_keyboard_json(responses: list[tuple[Project, str | None]]) -> str:
                     project.key,
                     "negative",
                 ),
+                action_button("🗑 Удалить", COMMAND_DELETE_RESPONSE, project.key, "negative"),
             ]
         )
+    buttons.append(
+        [
+            {
+                "action": {
+                    "type": "callback",
+                    "label": "🗑 Очистить статистику",
+                    "payload": json.dumps({"command": COMMAND_CLEAR_RESPONSE_STATISTICS}),
+                },
+                "color": "negative",
+            }
+        ]
+    )
     buttons.append(json.loads(back_keyboard_json())["buttons"][0])
     return json.dumps(
         {"one_time": False, "inline": False, "buttons": buttons},

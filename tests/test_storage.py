@@ -109,6 +109,44 @@ def test_store(tmp_path: Path) -> None:
     store.close()
 
 
+def test_response_statistics_reset_and_delete_preserve_project_history(tmp_path: Path) -> None:
+    path = tmp_path / "responses.sqlite3"
+    store = ProjectStore(path)
+    first = Project("Kwork", "1", "Лендинг", "", "", "https://x/1", "Дизайн")
+    second = Project("FL.ru", "2", "Сайт", "", "", "https://x/2", "Дизайн")
+    for project in (first, second):
+        store.remember_project(project)
+        store.mark_seen(project.key, project.source)
+
+    assert store.set_project_decision(first.key, "responded")
+    assert store.set_project_outcome(first.key, "client_replied")
+    store.reset_feedback_statistics()
+    assert store.feedback_counts()["responded"] == 0
+    assert store.feedback_counts()["client_replied"] == 0
+    assert store.active_responses()[0][0] == first
+    assert store.get_project_feedback(first.key) == ("responded", "client_replied")
+
+    store.close()
+    store = ProjectStore(path)
+    assert store.feedback_counts()["responded"] == 0
+    assert store.set_project_decision(second.key, "responded")
+    assert store.feedback_counts()["responded"] == 1
+    assert store.delete_response(first.key)
+    assert store.get_project_feedback(first.key) == ("responded", "client_replied")
+    assert all(project.key != first.key for project, _ in store.active_responses())
+    assert store.get_project(first.key) == first
+    assert store.is_seen(first.key)
+    assert not store.delete_response(first.key)
+    assert store.delete_response(second.key)
+    assert store.feedback_counts()["responded"] == 1
+    assert store.active_responses() == []
+    store.close()
+    store = ProjectStore(path)
+    assert store.active_responses() == []
+    assert store.feedback_counts()["responded"] == 1
+    store.close()
+
+
 def test_daily_statistics_uses_display_timezone_and_includes_empty_days(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path / "daily.sqlite3")
     store.set_state("statistics_started_at", "2026-07-01 00:00:00.000000")
@@ -265,6 +303,36 @@ def test_store_migrates_ai_assessment_summary(tmp_path: Path) -> None:
         connection.close()
 
     assert "summary" in columns
+
+
+def test_store_migrates_existing_feedback_counters(tmp_path: Path) -> None:
+    path = tmp_path / "old-feedback.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """
+        CREATE TABLE project_feedback (
+            project_key TEXT PRIMARY KEY,
+            decision TEXT NOT NULL,
+            outcome TEXT,
+            decision_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            outcome_at TEXT
+        )
+        """
+    )
+    connection.execute(
+        "INSERT INTO project_feedback(project_key, decision) VALUES ('Kwork:1', 'responded')"
+    )
+    connection.commit()
+    connection.close()
+
+    store = ProjectStore(path)
+    assert store.feedback_counts()["responded"] == 1
+    assert store._connection.execute(
+        "SELECT hidden_from_responses FROM project_feedback"
+    ).fetchone() == (0,)
+    store.reset_feedback_statistics()
+    assert store.feedback_counts()["responded"] == 0
+    store.close()
 
 
 def test_kwork_restarted_publication_is_treated_as_new(tmp_path: Path) -> None:

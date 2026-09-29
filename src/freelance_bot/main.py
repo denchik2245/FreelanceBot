@@ -18,10 +18,12 @@ from freelance_bot.sources.profi import ProfiSource
 from freelance_bot.storage import ProjectStore
 from freelance_bot.vk import (
     COMMAND_CLEAR_CHAT,
+    COMMAND_CLEAR_RESPONSE_STATISTICS,
     COMMAND_CLEAR_STATISTICS,
     COMMAND_CLIENT_CHOSE_OTHER,
     COMMAND_CLIENT_REPLIED,
     COMMAND_CONFIG_TEXTS,
+    COMMAND_DELETE_RESPONSE,
     COMMAND_EDIT_FILTER,
     COMMAND_FILTER_SETTINGS,
     COMMAND_MENU,
@@ -695,6 +697,11 @@ async def _listen_for_commands(
                 return
             await show_responses()
             return
+        if command == COMMAND_DELETE_RESPONSE:
+            if event.project_key is not None:
+                store.delete_response(event.project_key)
+            await show_responses()
+            return
         if command == COMMAND_MENU:
             await show_menu()
             return
@@ -707,6 +714,10 @@ async def _listen_for_commands(
         if command == COMMAND_CLEAR_STATISTICS:
             store.reset_statistics()
             await show_notice(_format_statistics(store), statistics_keyboard_json())
+            return
+        if command == COMMAND_CLEAR_RESPONSE_STATISTICS:
+            store.reset_feedback_statistics()
+            await show_responses()
             return
         if command == COMMAND_CLEAR_CHAT:
             try:
