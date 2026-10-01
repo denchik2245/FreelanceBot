@@ -62,7 +62,6 @@ LOGGER = logging.getLogger(__name__)
 MAX_PROJECT_AGE = timedelta(hours=24)
 FL_MAIL_UID_VALIDITY_STATE = "fl_mail:uid_validity"
 FL_MAIL_LAST_UID_STATE = "fl_mail:last_uid"
-FL_MAIL_ERROR_STATE = "fl_mail:error_notified"
 
 
 def _keyword_candidates(source: str, projects: list[Project]) -> list[Project]:
@@ -292,21 +291,8 @@ async def _monitor_fl_mail(
                 )
             elif delivered:
                 LOGGER.info("Отправлено уведомлений о сообщениях FL.ru: %d", delivered)
-            if store.get_state(FL_MAIL_ERROR_STATE) == "1":
-                await bot.send_text("✅ Проверка сообщений FL.ru через Gmail восстановлена.")
-                store.set_state(FL_MAIL_ERROR_STATE, "0")
         except Exception:
             LOGGER.exception("Не удалось проверить уведомления FL.ru в Gmail")
-            if store.get_state(FL_MAIL_ERROR_STATE) != "1":
-                try:
-                    await bot.send_text(
-                        "⚠️ Не удалось проверить Gmail для сообщений FL.ru. "
-                        "Проверьте адрес, пароль приложения и журнал бота."
-                    )
-                except Exception:
-                    LOGGER.exception("Не удалось отправить в VK ошибку проверки Gmail")
-                else:
-                    store.set_state(FL_MAIL_ERROR_STATE, "1")
         await asyncio.sleep(settings.fl_mail_poll_interval_seconds)
 
 
