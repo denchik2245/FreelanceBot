@@ -4,6 +4,9 @@ from pathlib import Path
 
 from freelance_bot.models import AiAssessment, Project
 
+RESPONSE_SOURCES = ("Kwork", "FL.ru", "Profi.ru")
+RESPONSE_OUTCOMES = ("client_replied", "client_chose_other", "client_refused", "ordered")
+
 
 class ProjectStore:
     def __init__(self, path: Path) -> None:
@@ -165,6 +168,43 @@ class ProjectStore:
             VALUES ('statistics_started_at', CURRENT_TIMESTAMP)
             """
         )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS response_counters (
+                source TEXT NOT NULL,
+                outcome TEXT NOT NULL CHECK(outcome IN (
+                    'client_replied', 'client_chose_other', 'client_refused', 'ordered'
+                )),
+                count INTEGER NOT NULL DEFAULT 0 CHECK(count >= 0),
+                PRIMARY KEY(source, outcome)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS response_counter_events (
+                event_id TEXT PRIMARY KEY
+            )
+            """
+        )
+        if self.get_state("response_counters_migrated") != "1":
+            # Copy existing counted outcomes once, including hidden records.
+            # Keep the old feedback rows as history and for the card's toggle.
+            self._connection.execute(
+                """
+                INSERT INTO response_counters(source, outcome, count)
+                SELECT COALESCE(c.source, substr(f.project_key, 1,
+                           instr(f.project_key, ':') - 1)), f.outcome, COUNT(*)
+                FROM project_feedback AS f
+                LEFT JOIN project_catalog AS c USING(project_key)
+                WHERE f.decision = 'responded' AND f.stats_counted = 1
+                  AND f.outcome IS NOT NULL
+                GROUP BY 1, 2
+                """
+            )
+            self._connection.execute(
+                "INSERT INTO state(name, value) VALUES ('response_counters_migrated', '1')"
+            )
         self._connection.commit()
 
     def is_seen(self, key: str) -> bool:
@@ -374,6 +414,7 @@ class ProjectStore:
                 (project_key, decision),
             )
         elif row[0] != decision:
+            self._check_response_removal(project_key)
             self._connection.execute(
                 """
                 UPDATE project_feedback
@@ -393,11 +434,14 @@ class ProjectStore:
             raise KeyError(project_key)
         current = self.get_project_feedback(project_key)
         if current is not None and current[0] == decision:
+            self._check_response_removal(project_key)
             self._connection.execute(
                 "DELETE FROM project_feedback WHERE project_key = ?", (project_key,)
             )
             self._connection.commit()
             return None
+        if current is not None and current[0] == "responded":
+            self._check_response_removal(project_key)
         self._connection.execute(
             """
             INSERT INTO project_feedback(
@@ -418,36 +462,64 @@ class ProjectStore:
         self._connection.commit()
         return decision
 
-    def set_project_outcome(self, project_key: str, outcome: str) -> bool:
-        if outcome not in {"client_replied", "client_chose_other"}:
-            raise ValueError(f"Неизвестный исход: {outcome}")
-        cursor = self._connection.execute(
-            """
-            UPDATE project_feedback
-            SET outcome = ?, outcome_at = CURRENT_TIMESTAMP
-            WHERE project_key = ? AND decision = 'responded'
-            """,
-            (outcome, project_key),
-        )
-        self._connection.commit()
-        return cursor.rowcount > 0
-
-    def delete_response(self, project_key: str) -> bool:
-        cursor = self._connection.execute(
-            """
-            UPDATE project_feedback SET hidden_from_responses = 1
-            WHERE project_key = ? AND decision = 'responded' AND hidden_from_responses = 0
-            """,
+    def _check_response_removal(self, project_key: str) -> None:
+        row = self._connection.execute(
+            "SELECT decision, stats_counted FROM project_feedback WHERE project_key = ?",
             (project_key,),
+        ).fetchone()
+        if row is None or row != ("responded", 1):
+            return
+        project = self.get_project(project_key)
+        if project is None or project.source not in RESPONSE_SOURCES:
+            return
+        counts = self.feedback_counts_by_source()[project.source]
+        minimum = max(
+            counts["client_replied"],
+            counts["client_chose_other"] + counts["client_refused"] + counts["ordered"],
         )
-        self._connection.commit()
-        return cursor.rowcount > 0
+        if counts["responded"] <= minimum:
+            raise ValueError("Сначала уменьшите счетчик результата в разделе «Отклики».")
+
+    def change_response_counter(
+        self, source: str, outcome: str, delta: int = 1, *, event_id: str | None = None
+    ) -> bool:
+        if source not in RESPONSE_SOURCES or outcome not in RESPONSE_OUTCOMES:
+            raise ValueError("Неизвестная биржа или результат отклика.")
+        if outcome == "client_refused" and source != "FL.ru":
+            raise ValueError("Отказы учитываются только для FL.ru.")
+        if type(delta) is not int or delta not in {-1, 1}:
+            raise ValueError("Счетчик можно изменить только на 1.")
+        if event_id and self._connection.execute(
+            "SELECT 1 FROM response_counter_events WHERE event_id = ?", (event_id,)
+        ).fetchone():
+            return False
+        counts = self.feedback_counts_by_source()[source]
+        counts[outcome] += delta
+        if counts[outcome] < 0:
+            raise ValueError("Счетчик уже равен нулю.")
+        terminal = counts["client_chose_other"] + counts["client_refused"] + counts["ordered"]
+        if max(counts["client_replied"], terminal) > counts["responded"]:
+            raise ValueError("Результатов не может быть больше, чем откликов на этой бирже.")
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO response_counters(source, outcome, count) VALUES (?, ?, ?)
+                ON CONFLICT(source, outcome) DO UPDATE SET count = excluded.count
+                """,
+                (source, outcome, counts[outcome]),
+            )
+            if event_id:
+                self._connection.execute(
+                    "INSERT INTO response_counter_events(event_id) VALUES (?)", (event_id,)
+                )
+        return True
 
     def reset_feedback_statistics(self) -> None:
-        self._connection.execute(
-            "UPDATE project_feedback SET stats_counted = 0 WHERE decision = 'responded'"
-        )
-        self._connection.commit()
+        with self._connection:
+            self._connection.execute(
+                "UPDATE project_feedback SET stats_counted = 0 WHERE decision = 'responded'"
+            )
+            self._connection.execute("UPDATE response_counters SET count = 0")
 
     def get_project(self, project_key: str) -> Project | None:
         row = self._connection.execute(
@@ -483,45 +555,35 @@ class ProjectStore:
         return str(row[0]), str(row[1]) if row[1] else None
 
     def feedback_counts(self) -> dict[str, int]:
-        counts = {
-            "responded": 0,
-            "rejected": 0,
-            "client_replied": 0,
-            "client_chose_other": 0,
+        by_source = self.feedback_counts_by_source()
+        return {
+            metric: sum(counts[metric] for counts in by_source.values())
+            for metric in ("responded", "rejected", *RESPONSE_OUTCOMES)
+        }
+
+    def feedback_counts_by_source(self) -> dict[str, dict[str, int]]:
+        result = {
+            source: dict.fromkeys(("responded", "rejected", *RESPONSE_OUTCOMES), 0)
+            for source in RESPONSE_SOURCES
         }
         rows = self._connection.execute(
             """
-            SELECT decision, outcome, COUNT(*)
-            FROM project_feedback
-            WHERE stats_counted = 1
-            GROUP BY decision, outcome
-            """
-        ).fetchall()
-        for decision, outcome, count in rows:
-            counts[str(decision)] += int(count)
-            if outcome:
-                counts[str(outcome)] += int(count)
-        return counts
-
-    def active_responses(self, limit: int = 10) -> list[tuple[Project, str | None]]:
-        rows = self._connection.execute(
-            """
-            SELECT c.project_key, f.outcome
+            SELECT COALESCE(c.source, substr(f.project_key, 1,
+                       instr(f.project_key, ':') - 1)), f.decision, COUNT(*)
             FROM project_feedback AS f
-            JOIN project_catalog AS c USING(project_key)
-            WHERE f.decision = 'responded'
-              AND f.hidden_from_responses = 0
-              AND (f.outcome IS NULL OR f.outcome = 'client_replied')
-            ORDER BY f.decision_at DESC
-            LIMIT ?
-            """,
-            (limit,),
+            LEFT JOIN project_catalog AS c USING(project_key)
+            WHERE f.stats_counted = 1
+            GROUP BY 1, 2
+            """
         ).fetchall()
-        result: list[tuple[Project, str | None]] = []
-        for project_key, outcome in rows:
-            project = self.get_project(str(project_key))
-            if project is not None:
-                result.append((project, str(outcome) if outcome else None))
+        for source, decision, count in rows:
+            if source in result:
+                result[source][decision] = int(count)
+        for source, outcome, count in self._connection.execute(
+            "SELECT source, outcome, count FROM response_counters"
+        ):
+            if source in result:
+                result[source][outcome] = int(count)
         return result
 
     def notifications_enabled(self, source: str) -> bool:

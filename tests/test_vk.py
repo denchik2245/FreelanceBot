@@ -5,9 +5,9 @@ import pytest
 
 from freelance_bot.models import AiAssessment, Project
 from freelance_bot.vk import (
+    COMMAND_CHANGE_RESPONSE_COUNTER,
     COMMAND_CLEAR_RESPONSE_STATISTICS,
     COMMAND_CONFIG_TEXTS,
-    COMMAND_DELETE_RESPONSE,
     COMMAND_FILTER_SETTINGS,
     COMMAND_RESPONDED,
     COMMAND_REWRITE_RESPONSE,
@@ -18,7 +18,6 @@ from freelance_bot.vk import (
     VkApiError,
     VkBot,
     filter_settings_keyboard_json,
-    format_active_responses,
     format_message,
     keyboard_json,
     parse_command,
@@ -144,64 +143,46 @@ def test_generated_response_keyboard_has_one_revision_action() -> None:
     assert event.response_action == "different"
 
 
-def test_responses_list_has_direct_outcome_actions() -> None:
-    waiting = Project("Kwork", "1", "Дизайн лендинга", "", "", "https://x", "Дизайн")
-    replied = Project(
-        "FL.ru",
-        "2",
-        "Интерфейс приложения",
-        "",
-        "",
-        "https://y",
-        "Дизайн",
-    )
-    responses = [(waiting, None), (replied, "client_replied")]
-
-    message = format_active_responses(responses)
-    keyboard = json.loads(responses_keyboard_json(responses))
-
-    assert "1. Дизайн лендинга — Kwork.ru\n   ⏳ Ждём ответа" in message
-    assert "2. Интерфейс приложения — FL.ru\n   💬 Клиент написал" in message
-    assert [button["action"]["label"] for button in keyboard["buttons"][0]] == [
-        "1. Открыть",
-        "💬 Написал",
-        "✖ Другой",
-        "🗑 Удалить",
-    ]
-    assert keyboard["buttons"][1][1]["action"]["label"] == "✅ Написал"
-    assert keyboard["buttons"][1][1]["color"] == "positive"
-
-    replied_event = parse_command(
-        {"payload": keyboard["buttons"][0][1]["action"]["payload"]}
-    )
-    other_event = parse_command(
-        {"payload": keyboard["buttons"][0][2]["action"]["payload"]}
-    )
-    delete_event = parse_command(
-        {"payload": keyboard["buttons"][0][3]["action"]["payload"]}
-    )
-    clear_event = parse_command(
-        {"payload": keyboard["buttons"][2][0]["action"]["payload"]}
-    )
-    assert replied_event is not None
-    assert replied_event.name == "client_replied"
-    assert replied_event.project_key == waiting.key
-    assert other_event is not None
-    assert other_event.name == "client_chose_other"
-    assert other_event.project_key == waiting.key
-    assert delete_event is not None
-    assert delete_event.name == COMMAND_DELETE_RESPONSE
-    assert delete_event.project_key == waiting.key
-    assert clear_event is not None
-    assert clear_event.name == COMMAND_CLEAR_RESPONSE_STATISTICS
-    assert keyboard["buttons"][2][0]["action"]["label"] == "🗑 Очистить статистику"
+@pytest.mark.parametrize("source", ["Kwork", "FL.ru", "Profi.ru"])
+def test_responses_have_source_counters_without_project_actions(source: str) -> None:
+    keyboard = json.loads(responses_keyboard_json(source))
+    assert keyboard["inline"] is False
+    rows = keyboard["buttons"][1:-2]
+    labels = [row[0]["action"]["label"] for row in rows]
+    expected = ["Заказали у другого", "Написали мне", "Заказали"]
+    if source == "FL.ru":
+        expected.insert(2, "Отказали")
+    assert labels == expected
+    assert len(keyboard["buttons"]) <= 10
+    for row in rows:
+        for index, button in enumerate(row):
+            event = parse_command({"payload": button["action"]["payload"]})
+            assert event is not None
+            assert event.name == COMMAND_CHANGE_RESPONSE_COUNTER
+            assert event.source == source
+            assert event.project_key is None
+            assert event.delta == (1 if index == 0 else -1)
+        assert row[1]["action"]["label"] == "−1"
+    for button in keyboard["buttons"][0]:
+        event = parse_command({"payload": button["action"]["payload"]})
+        assert event.name == "response_source"
+        assert event.source in {"Kwork", "FL.ru", "Profi.ru"}
 
 
 def test_empty_responses_keep_statistics_reset_action() -> None:
-    keyboard = json.loads(responses_keyboard_json([]))
-    event = parse_command({"payload": keyboard["buttons"][0][0]["action"]["payload"]})
+    keyboard = json.loads(responses_keyboard_json())
+    event = parse_command({"payload": keyboard["buttons"][-2][0]["action"]["payload"]})
     assert event is not None
     assert event.name == COMMAND_CLEAR_RESPONSE_STATISTICS
+
+
+@pytest.mark.parametrize("delta", [0, 2, True, "1", None])
+def test_invalid_counter_delta_is_not_accepted(delta) -> None:
+    event = parse_command({"payload": {
+        "command": COMMAND_CHANGE_RESPONSE_COUNTER, "source": "Kwork",
+        "outcome": "ordered", "delta": delta,
+    }})
+    assert event.delta is None
 
 
 def test_project_message_uses_compact_format_and_display_timezone() -> None:

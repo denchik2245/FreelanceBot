@@ -17,6 +17,7 @@ from freelance_bot.sources.kwork import KworkSource
 from freelance_bot.sources.profi import ProfiSource
 from freelance_bot.storage import ProjectStore
 from freelance_bot.vk import (
+    COMMAND_CHANGE_RESPONSE_COUNTER,
     COMMAND_CLEAR_CHAT,
     COMMAND_CLEAR_RESPONSE_STATISTICS,
     COMMAND_CLEAR_STATISTICS,
@@ -29,6 +30,7 @@ from freelance_bot.vk import (
     COMMAND_MENU,
     COMMAND_RESPONDED,
     COMMAND_RESPONSE_PROJECT,
+    COMMAND_RESPONSE_SOURCE,
     COMMAND_RESPONSES,
     COMMAND_REWRITE_RESPONSE,
     COMMAND_SET_CONFIG_TEXT,
@@ -46,11 +48,9 @@ from freelance_bot.vk import (
     VkBot,
     config_texts_keyboard_json,
     filter_settings_keyboard_json,
-    format_active_responses,
     format_message,
     keyboard_json,
     project_keyboard_json,
-    response_detail_keyboard_json,
     response_variants_keyboard_json,
     responses_keyboard_json,
     settings_keyboard_json,
@@ -321,7 +321,7 @@ def _format_statistics(store: ProjectStore) -> str:
                 f"Отклонено AI — {ai_rejected[period]}",
             )
         )
-    lines.extend(("", "По дням с начала месяца"))
+    lines.extend(("", _format_feedback_summary(store), "", "По дням с начала месяца"))
     weekend_labels = {5: "суббота", 6: "воскресенье"}
     for index, (day, counts) in enumerate(reversed(daily_statistics.items())):
         if index:
@@ -334,16 +334,52 @@ def _format_statistics(store: ProjectStore) -> str:
 
 
 def _format_feedback_summary(store: ProjectStore) -> str:
-    counts = store.feedback_counts()
-    return "\n".join(
-        (
-            "📨 Отклики",
+    by_source = store.feedback_counts_by_source()
+
+    def percent(count: int, total: int) -> str:
+        return f"{count / total * 100:.1f}%".replace(".", ",") if total else "нет откликов"
+
+    def block(label: str, counts: dict[str, int], *, refusals: bool = False) -> list[str]:
+        total = counts["responded"]
+        lines = [
             "",
-            f"Откликнулся — {counts['responded']}",
-            f"Клиент написал — {counts['client_replied']}",
+            label,
+            f"Откликнулся — {total}",
+            f"Написали мне — {counts['client_replied']}",
+            f"Заказали — {counts['ordered']}",
             f"Заказали у другого — {counts['client_chose_other']}",
+        ]
+        if refusals:
+            lines.append(f"Отказали — {counts['client_refused']}")
+        lines.extend(
+            (
+                f"Откликнулся → Написали мне — {percent(counts['client_replied'], total)}",
+                f"Откликнулся → Заказали — {percent(counts['ordered'], total)}",
+                f"Доля заказов у других — {percent(counts['client_chose_other'], total)}",
+            )
+        )
+        if refusals:
+            lines.append(f"Доля отказов — {percent(counts['client_refused'], total)}")
+        return lines
+
+    totals = {
+        metric: sum(counts[metric] for counts in by_source.values())
+        for metric in ("responded", "client_replied", "ordered", "client_chose_other")
+    }
+    lines = ["📨 Отклики"]
+    lines.extend(block("Всего", totals))
+    for source, counts in by_source.items():
+        if source == "Profi.ru" and not any(counts.values()):
+            continue
+        lines.extend(block(source, counts, refusals=source == "FL.ru"))
+    lines.extend(
+        (
+            "",
+            "Проценты считаются от числа откликов на соответствующей бирже.",
+            "«Написали мне» сохраняется, даже если затем заказали или отказали.",
         )
     )
+    return "\n".join(lines)
 
 
 async def _listen_for_commands(
@@ -360,6 +396,7 @@ async def _listen_for_commands(
     project_filters: ProjectFilterManager,
 ) -> None:
     response_lock = asyncio.Lock()
+    response_source = "Kwork"
 
     async def edit_project_message(event: BotCommand, message: str, keyboard: str) -> None:
         if event.event_id is not None and event.conversation_message_id is not None:
@@ -386,18 +423,21 @@ async def _listen_for_commands(
             )
         )
 
-    async def show_responses() -> None:
-        active = store.active_responses(limit=8)
-        if active:
-            message = (
-                f"{_format_feedback_summary(store)}\n\n"
-                f"Активных откликов — {len(active)}\n\n"
-                f"{format_active_responses(active)}\n\n"
-                "Статус можно изменить кнопкой в соответствующей строке."
-            )
-        else:
-            message = f"{_format_feedback_summary(store)}\n\nАктивных откликов пока нет."
-        await bot.set_persistent_keyboard(responses_keyboard_json(active))
+    async def show_responses(note: str | None = None) -> None:
+        message = (
+            f"{_format_feedback_summary(store)}\n\n"
+            f"Кнопки сейчас меняют счетчики {response_source}.\n"
+            "Нажатие на результат добавляет 1, «−1» рядом отменяет ошибку.\n"
+            "Смена результата: уменьшите прежний и добавьте новый."
+        )
+        if note:
+            message += f"\n\n⚠️ {note}"
+        include_profi = profi_source is not None or any(
+            store.feedback_counts_by_source()["Profi.ru"].values()
+        )
+        await bot.set_persistent_keyboard(
+            responses_keyboard_json(response_source, include_profi=include_profi)
+        )
         await bot.replace_ui(message)
 
     async def show_notice(message: str, keyboard: str) -> None:
@@ -492,6 +532,7 @@ async def _listen_for_commands(
         return project
 
     async def handle(event: BotCommand) -> None:
+        nonlocal response_source
         command = event.name
         if command == COMMAND_SOURCE_SETTINGS:
             await show_sources()
@@ -657,6 +698,9 @@ async def _listen_for_commands(
             except KeyError:
                 LOGGER.warning("Проект не найден в локальной истории: %s", event.project_key)
                 return
+            except ValueError as error:
+                await show_responses(str(error))
+                return
             project = store.get_project(event.project_key)
             if (
                 project is not None
@@ -672,20 +716,23 @@ async def _listen_for_commands(
                     project_keyboard_json(project.key, selected_decision),
                 )
             return
-        if command in {COMMAND_CLIENT_REPLIED, COMMAND_CLIENT_CHOSE_OTHER}:
-            if event.project_key is None:
-                return
-            outcome = (
-                "client_replied" if command == COMMAND_CLIENT_REPLIED else "client_chose_other"
-            )
-            if not store.set_project_outcome(event.project_key, outcome):
-                LOGGER.warning("Исход выбран без отклика: %s", event.project_key)
-                return
+        if command == COMMAND_RESPONSE_SOURCE:
+            if event.source is not None:
+                response_source = event.source
             await show_responses()
             return
-        if command == COMMAND_DELETE_RESPONSE:
-            if event.project_key is not None:
-                store.delete_response(event.project_key)
+        if command == COMMAND_CHANGE_RESPONSE_COUNTER:
+            if event.source is None or event.outcome is None or event.delta is None:
+                await show_responses("Не удалось распознать действие. Используйте текущие кнопки.")
+                return
+            response_source = event.source
+            try:
+                store.change_response_counter(
+                    event.source, event.outcome, event.delta, event_id=event.event_id
+                )
+            except ValueError as error:
+                await show_responses(str(error))
+                return
             await show_responses()
             return
         if command == COMMAND_MENU:
@@ -723,23 +770,14 @@ async def _listen_for_commands(
         if command == COMMAND_RESPONSES:
             await show_responses()
             return
-        if command == COMMAND_RESPONSE_PROJECT:
-            if event.project_key is None:
-                await show_responses()
-                return
-            project = store.get_project(event.project_key)
-            feedback = store.get_project_feedback(event.project_key)
-            if project is None or feedback is None or feedback[0] != "responded":
-                await show_responses()
-                return
-            status = (
-                "💬 Клиент написал" if feedback[1] == "client_replied" else "⏳ Ждём ответа клиента"
-            )
-            await show_notice(
-                f"{format_message(project, assessment=store.get_ai_assessment(project.key))}"
-                f"\n\n{status}",
-                response_detail_keyboard_json(project.key),
-            )
+        if command in {
+            COMMAND_RESPONSE_PROJECT,
+            COMMAND_DELETE_RESPONSE,
+            COMMAND_CLIENT_REPLIED,
+            COMMAND_CLIENT_CHOSE_OTHER,
+        }:
+            # Old keyboards may still exist in the chat after an upgrade.
+            await show_responses()
             return
         if command in {COMMAND_TOGGLE_KWORK, COMMAND_TOGGLE_FL, COMMAND_TOGGLE_PROFI}:
             source = {

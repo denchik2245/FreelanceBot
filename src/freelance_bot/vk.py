@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from freelance_bot.models import AiAssessment, Project
+from freelance_bot.storage import RESPONSE_OUTCOMES, RESPONSE_SOURCES
 
 LOGGER = logging.getLogger(__name__)
 COMMAND_MENU = "menu"
@@ -29,6 +30,8 @@ COMMAND_CLIENT_REPLIED = "client_replied"
 COMMAND_CLIENT_CHOSE_OTHER = "client_chose_other"
 COMMAND_RESPONSE_PROJECT = "response_project"
 COMMAND_DELETE_RESPONSE = "delete_response"
+COMMAND_RESPONSE_SOURCE = "response_source"
+COMMAND_CHANGE_RESPONSE_COUNTER = "change_response_counter"
 COMMAND_CONFIG_TEXTS = "config_texts"
 COMMAND_VIEW_CONFIG_TEXT = "view_config_text"
 COMMAND_SET_CONFIG_TEXT = "set_config_text"
@@ -57,6 +60,8 @@ ALL_COMMANDS = {
     COMMAND_CLIENT_CHOSE_OTHER,
     COMMAND_RESPONSE_PROJECT,
     COMMAND_DELETE_RESPONSE,
+    COMMAND_RESPONSE_SOURCE,
+    COMMAND_CHANGE_RESPONSE_COUNTER,
     COMMAND_CONFIG_TEXTS,
     COMMAND_VIEW_CONFIG_TEXT,
     COMMAND_SET_CONFIG_TEXT,
@@ -81,6 +86,9 @@ class BotCommand:
     document_name: str | None = None
     response_action: str | None = None
     filter_name: str | None = None
+    source: str | None = None
+    outcome: str | None = None
+    delta: int | None = None
 
 
 class VkApiError(RuntimeError):
@@ -206,52 +214,6 @@ def response_variants_keyboard_json(project_key: str) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
     )
-
-
-def response_keyboard_json(project_key: str) -> str:
-    def button(label: str, command: str, color: str) -> dict[str, Any]:
-        return {
-            "action": {
-                "type": "callback",
-                "label": label,
-                "payload": json.dumps(
-                    {"command": command, "project_key": project_key},
-                    ensure_ascii=False,
-                ),
-            },
-            "color": color,
-        }
-
-    return json.dumps(
-        {
-            "one_time": False,
-            "inline": True,
-            "buttons": [
-                [button("💬 Клиент написал", COMMAND_CLIENT_REPLIED, "positive")],
-                [button("Заказали у другого", COMMAND_CLIENT_CHOSE_OTHER, "negative")],
-            ],
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
-
-def response_detail_keyboard_json(project_key: str) -> str:
-    keyboard = json.loads(response_keyboard_json(project_key))
-    keyboard["inline"] = False
-    keyboard["buttons"].append(
-        [
-            {
-                "action": {
-                    "type": "callback",
-                    "label": "← К откликам",
-                    "payload": json.dumps({"command": COMMAND_RESPONSES}, ensure_ascii=False),
-                },
-                "color": "secondary",
-            }
-        ]
-    )
-    return json.dumps(keyboard, ensure_ascii=False, separators=(",", ":"))
 
 
 def settings_keyboard_json() -> str:
@@ -439,55 +401,56 @@ def statistics_keyboard_json() -> str:
     )
 
 
-def responses_keyboard_json(responses: list[tuple[Project, str | None]]) -> str:
-    def action_button(
-        label: str,
-        command: str,
-        project_key: str,
-        color: str = "secondary",
-    ) -> dict[str, Any]:
+def responses_keyboard_json(source: str = "Kwork", *, include_profi: bool = False) -> str:
+    if source not in RESPONSE_SOURCES:
+        raise ValueError("Неизвестная биржа")
+
+    def button(label: str, payload: dict[str, Any], color: str = "secondary") -> dict[str, Any]:
         return {
             "action": {
                 "type": "callback",
                 "label": label,
-                "payload": json.dumps(
-                    {"command": command, "project_key": project_key},
-                    ensure_ascii=False,
-                ),
+                "payload": json.dumps(payload, ensure_ascii=False),
             },
             "color": color,
         }
 
-    buttons: list[list[dict[str, Any]]] = []
-    for index, (project, outcome) in enumerate(responses[:8], start=1):
+    sources = RESPONSE_SOURCES if include_profi or source == "Profi.ru" else RESPONSE_SOURCES[:2]
+    buttons = [
+        [
+            button(
+                f"✅ {item}" if item == source else item,
+                {"command": COMMAND_RESPONSE_SOURCE, "source": item},
+                "primary" if item == source else "secondary",
+            )
+            for item in sources
+        ]
+    ]
+    outcomes = [
+        ("Заказали у другого", "client_chose_other"),
+        ("Написали мне", "client_replied"),
+        ("Отказали", "client_refused"),
+        ("Заказали", "ordered"),
+    ]
+    for label, outcome in outcomes:
+        if outcome == "client_refused" and source != "FL.ru":
+            continue
+        payload = {"command": COMMAND_CHANGE_RESPONSE_COUNTER, "source": source, "outcome": outcome}
         buttons.append(
             [
-                action_button(f"{index}. Открыть", COMMAND_RESPONSE_PROJECT, project.key),
-                action_button(
-                    "✅ Написал" if outcome == "client_replied" else "💬 Написал",
-                    COMMAND_CLIENT_REPLIED,
-                    project.key,
-                    "positive" if outcome == "client_replied" else "secondary",
+                button(
+                    label,
+                    {**payload, "delta": 1},
+                    "positive" if outcome == "ordered" else "secondary",
                 ),
-                action_button(
-                    "✖ Другой",
-                    COMMAND_CLIENT_CHOSE_OTHER,
-                    project.key,
-                    "negative",
-                ),
-                action_button("🗑 Удалить", COMMAND_DELETE_RESPONSE, project.key, "negative"),
+                button("−1", {**payload, "delta": -1}),
             ]
         )
     buttons.append(
         [
-            {
-                "action": {
-                    "type": "callback",
-                    "label": "🗑 Очистить статистику",
-                    "payload": json.dumps({"command": COMMAND_CLEAR_RESPONSE_STATISTICS}),
-                },
-                "color": "negative",
-            }
+            button(
+                "🗑 Очистить статистику", {"command": COMMAND_CLEAR_RESPONSE_STATISTICS}, "negative"
+            )
         ]
     )
     buttons.append(json.loads(back_keyboard_json())["buttons"][0])
@@ -496,15 +459,6 @@ def responses_keyboard_json(responses: list[tuple[Project, str | None]]) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
     )
-
-
-def format_active_responses(responses: list[tuple[Project, str | None]]) -> str:
-    items: list[str] = []
-    for index, (project, outcome) in enumerate(responses[:8], start=1):
-        source = "Kwork.ru" if project.source == "Kwork" else project.source
-        status = "💬 Клиент написал" if outcome == "client_replied" else "⏳ Ждём ответа"
-        items.append(f"{index}. {_clip(project.title, 100)} — {source}\n   {status}")
-    return "\n\n".join(items)
 
 
 def parse_command(message: dict[str, Any]) -> BotCommand | None:
@@ -521,6 +475,9 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
             config_key = payload.get("config_key")
             response_action = payload.get("response_action")
             filter_name = payload.get("filter_name")
+            source = payload.get("source")
+            outcome = payload.get("outcome")
+            delta = payload.get("delta")
             return BotCommand(
                 str(command),
                 str(project_key) if isinstance(project_key, str) and project_key else None,
@@ -531,12 +488,16 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
                 str(message["event_id"]) if message.get("event_id") else None,
                 config_key=(
                     str(config_key)
-                    if config_key in {"profile", "filter", "response", "portfolio"} else None
+                    if config_key in {"profile", "filter", "response", "portfolio"}
+                    else None
                 ),
                 response_action=(
                     str(response_action) if response_action in RESPONSE_ACTIONS else None
                 ),
                 filter_name=str(filter_name) if filter_name in FILTER_NAMES else None,
+                source=str(source) if source in RESPONSE_SOURCES else None,
+                outcome=str(outcome) if outcome in RESPONSE_OUTCOMES else None,
+                delta=delta if type(delta) is int and delta in {-1, 1} else None,
             )
 
     original_text = str(message.get("text", "")).strip()
@@ -907,13 +868,6 @@ class VkBot:
         await self.send_text(
             format_message(project, assessment=assessment),
             keyboard=project_keyboard_json(project.key),
-        )
-
-    async def send_response_project(self, project: Project, *, client_replied: bool) -> None:
-        status = "💬 Клиент написал" if client_replied else "⏳ Ждём ответа клиента"
-        await self.send_text(
-            f"{format_message(project)}\n\n{status}",
-            keyboard=response_keyboard_json(project.key),
         )
 
     async def send_menu(self, message: str = "Выберите действие:") -> bool:

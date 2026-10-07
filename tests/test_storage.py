@@ -95,13 +95,12 @@ def test_store(tmp_path: Path) -> None:
     assert store.set_project_decision(project.key, "responded")
     assert store.get_project_feedback(project.key) == ("responded", None)
     assert store.feedback_counts()["responded"] == 1
-    assert store.active_responses()[0][0] == project
-    assert store.set_project_outcome(project.key, "client_replied")
-    assert store.get_project_feedback(project.key) == ("responded", "client_replied")
+    assert store.change_response_counter("Kwork", "client_replied")
+    assert store.get_project_feedback(project.key) == ("responded", None)
     assert store.feedback_counts()["client_replied"] == 1
-    assert store.active_responses()[0][1] == "client_replied"
-    assert store.set_project_outcome(project.key, "client_chose_other")
-    assert store.active_responses() == []
+    assert store.change_response_counter("Kwork", "client_chose_other")
+    store.change_response_counter("Kwork", "client_replied", -1)
+    store.change_response_counter("Kwork", "client_chose_other", -1)
     assert store.toggle_project_decision(project.key, "rejected") == "rejected"
     assert store.get_project_feedback(project.key) == ("rejected", None)
     assert store.toggle_project_decision(project.key, "rejected") is None
@@ -109,7 +108,7 @@ def test_store(tmp_path: Path) -> None:
     store.close()
 
 
-def test_response_statistics_reset_and_delete_preserve_project_history(tmp_path: Path) -> None:
+def test_response_statistics_reset_preserves_project_history(tmp_path: Path) -> None:
     path = tmp_path / "responses.sqlite3"
     store = ProjectStore(path)
     first = Project("Kwork", "1", "Лендинг", "", "", "https://x/1", "Дизайн")
@@ -119,31 +118,26 @@ def test_response_statistics_reset_and_delete_preserve_project_history(tmp_path:
         store.mark_seen(project.key, project.source)
 
     assert store.set_project_decision(first.key, "responded")
-    assert store.set_project_outcome(first.key, "client_replied")
+    assert store.change_response_counter("Kwork", "client_replied")
     store.reset_feedback_statistics()
     assert store.feedback_counts()["responded"] == 0
     assert store.feedback_counts()["client_replied"] == 0
-    assert store.active_responses()[0][0] == first
-    assert store.get_project_feedback(first.key) == ("responded", "client_replied")
+    assert store.get_project_feedback(first.key) == ("responded", None)
 
     store.close()
     store = ProjectStore(path)
     assert store.feedback_counts()["responded"] == 0
     assert store.set_project_decision(second.key, "responded")
     assert store.feedback_counts()["responded"] == 1
-    assert store.delete_response(first.key)
-    assert store.get_project_feedback(first.key) == ("responded", "client_replied")
-    assert all(project.key != first.key for project, _ in store.active_responses())
+    assert store.get_project_feedback(first.key) == ("responded", None)
     assert store.get_project(first.key) == first
     assert store.is_seen(first.key)
-    assert not store.delete_response(first.key)
-    assert store.delete_response(second.key)
+    assert store.change_response_counter("FL.ru", "ordered")
     assert store.feedback_counts()["responded"] == 1
-    assert store.active_responses() == []
     store.close()
     store = ProjectStore(path)
-    assert store.active_responses() == []
     assert store.feedback_counts()["responded"] == 1
+    assert store.feedback_counts()["ordered"] == 1
     store.close()
 
 
@@ -205,6 +199,15 @@ def test_formatted_statistics_labels_weekends() -> None:
     sunday = datetime(2026, 8, 9).date()
 
     class FakeStore:
+        def feedback_counts_by_source(self):
+            return {
+                source: dict.fromkeys(
+                    ("responded", "client_replied", "client_chose_other", "client_refused", "ordered"),
+                    0,
+                )
+                for source in ("Kwork", "FL.ru", "Profi.ru")
+            }
+
         def project_statistics(self) -> dict[str, dict[str, int]]:
             return {
                 source: {"day": 0, "week": 0, "month": 0}
