@@ -25,6 +25,7 @@ from freelance_bot.portfolio import (
     response_issues,
     select_cases,
 )
+from freelance_bot.response_skill import load_response_skill
 
 LOGGER = logging.getLogger(__name__)
 RETRY_ATTEMPTS = 3
@@ -181,6 +182,7 @@ class ProjectAdvisor:
         response_prompt: str,
         portfolio: str = "[]",
         portfolio_documents: dict[str, dict[str, str]] | None = None,
+        response_skill: str = "",
         verify_accepted: bool = True,
     ) -> None:
         if not profile.strip():
@@ -208,6 +210,7 @@ class ProjectAdvisor:
         self._profile = profile.strip()
         self._filter_prompt = filter_prompt.strip()
         self._response_prompt = response_prompt.strip()
+        self._response_skill = response_skill.strip()
         self._portfolio = parse_portfolio(portfolio)
         self._portfolio_documents = portfolio_documents or {}
         if portfolio_documents is not None and {
@@ -260,7 +263,7 @@ class ProjectAdvisor:
             }:
                 raise ValueError(
                     "Набор кейсов и ссылки не совпадают с Markdown-карточками. "
-                    "Обновите config/portfolio-index.md и config/portfolio-cases на сервере."
+                    "Обновите индекс и Markdown-карточки локального скилла на сервере."
                 )
             self._portfolio = updated
             return
@@ -288,6 +291,7 @@ class ProjectAdvisor:
         filter_prompt_path: Path,
         response_prompt_path: Path,
         portfolio_path: Path | None = None,
+        response_skill_path: Path | None = None,
         **kwargs: Any,
     ) -> Self:
         def read_text(path: Path, description: str) -> str:
@@ -298,7 +302,10 @@ class ProjectAdvisor:
 
         portfolio_text = read_text(portfolio_path, "портфолио") if portfolio_path else "[]"
         documents = (
-            load_portfolio_documents(portfolio_path, parse_portfolio(portfolio_text))
+            load_portfolio_documents(
+                portfolio_path, parse_portfolio(portfolio_text),
+                references_path=response_skill_path / "references" if response_skill_path else None,
+            )
             if portfolio_path else None
         )
         return cls(
@@ -307,6 +314,7 @@ class ProjectAdvisor:
             response_prompt=read_text(response_prompt_path, "промпт написания отклика"),
             portfolio=portfolio_text,
             portfolio_documents=documents,
+            response_skill=load_response_skill(response_skill_path) if response_skill_path else "",
             **kwargs,
         )
 
@@ -456,9 +464,12 @@ class ProjectAdvisor:
             facts = {k: v for k, v in case.items() if k != "url"}
             if case["id"] in documents:
                 facts["verified_card"] = documents[case["id"]]["card"]
+                facts["index_entry"] = documents[case["id"]]["search_text"]
             case_facts.append(facts)
         system_content = (
-            f"{self._response_prompt}\n\nФАКТЫ ОБ ИСПОЛНИТЕЛЕ:\n{self._profile}"
+            f"{getattr(self, '_response_skill', '')}\n\n"
+            f"АДАПТАЦИЯ СКИЛЛА ДЛЯ БОТА:\n{self._response_prompt}"
+            f"\n\nФАКТЫ ОБ ИСПОЛНИТЕЛЕ:\n{self._profile}"
             f"\n\nКЕЙСЫ-КАНДИДАТЫ (выбери уместные, можно не использовать):\n"
             f"{json.dumps(case_facts, ensure_ascii=False)}"
         )
@@ -587,8 +598,18 @@ class ProjectAdvisor:
                 # only catalogued facts and exact URLs so it cannot invent portfolio evidence.
                 for key in selected:
                     case = case_map[key]
-                    replacement = f"{case['name']}: {case['url']}\n{case['work']}"
+                    document = documents.get(key, {})
+                    url = (document.get("fl_url", case["url"])
+                           if project.source == "FL.ru" else case["url"])
+                    replacement = f"{case['name']}: {url}\n{case['work']}"
                     body = body.replace(f"{{{{CASE:{key}}}}}", replacement)
+                if project.source == "FL.ru":
+                    contacts = re.findall(
+                        r"(?m)^(Telegram|MAX):\s*(https://\S+)\s*$", self._profile
+                    )
+                    if {name for name, _ in contacts} != {"Telegram", "MAX"}:
+                        raise ValueError("В профиле нужны точные контакты Telegram и MAX для FL.ru")
+                    body += "\n\n" + "\n".join(f"{name}: {url}" for name, url in contacts)
                 return body
             if attempt == 0:
                 response_request.messages.append(Messages(
@@ -642,6 +663,7 @@ def create_advisor(settings: Settings) -> ProjectAdvisor:
         profile_path=settings.ai_profile_path,
         filter_prompt_path=settings.ai_filter_prompt_path,
         response_prompt_path=settings.ai_response_prompt_path,
+        response_skill_path=settings.ai_response_skill_path,
         portfolio_path=settings.ai_portfolio_path,
         min_score=settings.ai_min_score,
         verify_accepted=settings.ai_verify_accepted,

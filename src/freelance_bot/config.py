@@ -53,6 +53,7 @@ class Settings:
     deepseek_filter_model: str = "deepseek-flash"
     deepseek_filter_fallback_model: str = "deepseek-flash"
     deepseek_response_model: str = "deepseek-flash"
+    ai_response_skill_path: Path = Path("config/skills/freelance-response")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -146,6 +147,9 @@ class Settings:
             ),
             ai_response_prompt_path=Path(
                 os.getenv("AI_RESPONSE_PROMPT_PATH", "config/prompts/response_writer.txt")
+            ),
+            ai_response_skill_path=Path(
+                os.getenv("AI_RESPONSE_SKILL_PATH", "config/skills/freelance-response")
             ),
             gigachat_credentials=gigachat_credentials,
             gigachat_scope=os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS").strip(),

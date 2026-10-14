@@ -31,11 +31,16 @@ def parse_portfolio(text: str) -> list[dict[str, str]]:
 
 
 def load_portfolio_documents(
-    portfolio_path: Path, cases: list[dict[str, str]]
+    portfolio_path: Path, cases: list[dict[str, str]], *, references_path: Path | None = None,
 ) -> dict[str, dict[str, str]]:
-    """Load the skill index and verified case cards alongside portfolio.json."""
-    index_path = portfolio_path.with_name("portfolio-index.md")
-    cards_dir = portfolio_path.with_name("portfolio-cases")
+    """Load the complete local skill, with support for older standalone catalogues."""
+    bundled = portfolio_path.parent / "skills/freelance-response/references"
+    if references_path is None and bundled.is_dir():
+        references_path = bundled
+    index_path = (references_path / "portfolio-index.md" if references_path
+                  else portfolio_path.with_name("portfolio-index.md"))
+    cards_dir = (references_path / "cases" if references_path
+                 else portfolio_path.with_name("portfolio-cases"))
     try:
         index = index_path.read_text(encoding="utf-8")
     except OSError as error:
@@ -44,13 +49,13 @@ def load_portfolio_documents(
     rows: dict[str, tuple[str, str]] = {}
     for line in index.splitlines():
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) != 6 or not re.fullmatch(r"`[a-z0-9-]+`", cells[0]):
+        if len(cells) not in {6, 7} or not re.fullmatch(r"`[a-z0-9-]+`", cells[0]):
             continue
         case_id = cells[0].strip("`")
-        card_link = re.fullmatch(r"\[Открыть\]\(cases/([a-z0-9-]+)\.md\)", cells[5])
+        card_link = re.fullmatch(r"\[Открыть\]\(cases/([a-z0-9-]+)\.md\)", cells[-1])
         if not card_link or card_link[1] != case_id or case_id in rows:
             raise ValueError(f"Некорректная строка индекса для кейса {case_id}")
-        rows[case_id] = (" ".join(cells[1:4]), cells[4])
+        rows[case_id] = (" ".join(cells[1:-1]), cells[4])
 
     catalog = {case["id"]: case for case in cases}
     if rows.keys() != catalog.keys():
@@ -64,18 +69,25 @@ def load_portfolio_documents(
         except OSError as error:
             raise RuntimeError(f"Не удалось прочитать карточку кейса {card_path}") from error
         card_id = re.search(r"(?m)^- ID: `([a-z0-9-]+)`\s*$", card)
-        card_url = re.search(r"(?m)^- Публичная работа: (https://\S+)\s*$", card)
+        card_url = re.search(r"(?m)^- Публичная работа(?: Kwork)?: (https://\S+)\s*$", card)
         if not card_id or card_id[1] != case_id or not card_url or card_url[1] != case["url"]:
             raise ValueError(f"ID или публичная ссылка в карточке {case_id} не совпадает с JSON")
         # The application inserts the verified URL; the model should see facts, not links.
         safe_card = re.sub(
-            r"(?m)^- (?:Публичная работа|Сайт из кейса):[^\n]*\n?", "", card
+            r"(?m)^- (?:Публичная работа[^:]*|Сайт[^:]*|Опубликованный сайт[^:]*):[^\n]*\n?",
+            "", card,
         ).strip()
         documents[case_id] = {
             "search_text": rows[case_id][0],
             "card": safe_card,
             "url": case["url"],
         }
+        fl_url = re.search(r"(?m)^- Публичная работа FL\.ru: (https://\S+)\s*$", card)
+        if fl_url:
+            url = urlsplit(fl_url[1])
+            if url.netloc != "www.fl.ru" or not url.path.startswith("/user/"):
+                raise ValueError(f"Некорректная публичная ссылка FL.ru в карточке {case_id}")
+            documents[case_id]["fl_url"] = fl_url[1]
     return documents
 
 

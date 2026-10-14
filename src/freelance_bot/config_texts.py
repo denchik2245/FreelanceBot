@@ -28,7 +28,9 @@ class ConfigTextManager:
         filter_prompt_path: Path,
         response_prompt_path: Path,
         portfolio_path: Path | None = None,
+        response_skill_path: Path | None = None,
     ) -> None:
+        self._response_skill_path = response_skill_path
         self._items = {
             "profile": EditableConfigText("profile", "Профиль исполнителя", profile_path),
             "filter": EditableConfigText("filter", "Промпт отбора", filter_prompt_path),
@@ -62,8 +64,13 @@ class ConfigTextManager:
             raise ValueError("AI-текст не может быть пустым")
         if key == "portfolio":
             cases = parse_portfolio(normalized)
-            if item.path.with_name("portfolio-index.md").exists():
-                load_portfolio_documents(item.path, cases)
+            if (self._response_skill_path or item.path.with_name("portfolio-index.md").exists()
+                    or (item.path.parent / "skills/freelance-response/references").is_dir()):
+                load_portfolio_documents(
+                    item.path, cases,
+                    references_path=(self._response_skill_path / "references"
+                                     if self._response_skill_path else None),
+                )
         encoded = normalized.encode("utf-8")
         if len(encoded) > MAX_CONFIG_TEXT_BYTES:
             raise ValueError("AI-текст больше 100 КБ")

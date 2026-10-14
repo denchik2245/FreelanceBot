@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from dataclasses import replace
+from pathlib import Path
 
 import aiohttp
 import pytest
@@ -17,6 +18,7 @@ from freelance_bot.ai import (
 )
 from freelance_bot.config import Settings
 from freelance_bot.deepseek import DeepSeekApiError, DeepSeekClient
+from freelance_bot.response_skill import load_response_skill
 
 
 def _reply(content: str, finish: str = "stop") -> dict:
@@ -214,3 +216,66 @@ async def test_bad_decision_cannot_be_accepted(transport, monkeypatch, content, 
         with pytest.raises(ValueError):
             await advisor.assess(_project())
     assert len(requests) == 3
+
+
+@pytest.mark.parametrize("source", ["Kwork", "FL.ru", "Profi.ru"])
+async def test_local_skill_reaches_deepseek_and_renders_platform_links(
+    transport, monkeypatch, source,
+):
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("AI_ENABLED", "true")
+    monkeypatch.setenv("AI_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    advisor = create_advisor(Settings.from_env())
+    project = replace(
+        _project(), source=source, title="Магазин электроники на Tilda",
+        description="Каталог техники по категориям, карточки товаров, корзина и Trade-In.",
+    )
+    responses, requests, _ = transport
+    responses.extend(FakeResponse(_reply(json.dumps({
+        "body": "Здравствуйте! Разделю каталог по категориям техники.\n\n"
+                "{{CASE:electronics-store-tilda}}\n\n"
+                "Этот проект поможет согласовать подачу условий покупки.\n\n"
+                "Пришлите перечень категорий и материалы для карточек.",
+        "case_ids": ["electronics-store-tilda"],
+    }))) for _ in range(2))
+    async with advisor:
+        body = await advisor.generate_response(project)
+        rewritten = await advisor.generate_response(
+            project, previous_response=body, variation="shorter",
+        )
+
+    skill = Path("config/skills/freelance-response")
+    for _, options in requests:
+        system = options["json"]["messages"][1]["content"]
+        assert (skill / "SKILL.md").read_text(encoding="utf-8").strip() in system
+        assert (skill / "references/writing-style.md").read_text(encoding="utf-8").strip() in system
+        assert advisor._profile in system
+        assert "verified_card" in system
+        assert "Не утверждать" in system
+        assert "talantum-exam-courses" not in system
+        assert "https://" not in system.split("КЕЙСЫ-КАНДИДАТЫ", 1)[1]
+    assert "повторная генерация" in requests[1][1]["json"]["messages"][1]["content"]
+    assert requests[0][1]["json"]["model"] == advisor.response_model
+    for text in (body, rewritten):
+        assert "{{CASE:" not in text
+        if source == "FL.ru":
+            assert "https://www.fl.ru/user/flarich2281337/portfolio/8086703/" in text
+            assert "https://kwork.ru/portfolio/" not in text
+            assert text.count("Telegram:") == text.count("MAX:") == 1
+            assert text.endswith("X2alwQ7o")
+        else:
+            assert "https://kwork.ru/portfolio/24001122" in text
+            assert "Telegram:" not in text and "MAX:" not in text
+
+
+def test_missing_style_does_not_silently_disable_skill(tmp_path):
+    (tmp_path / "SKILL.md").write_text("Правила отклика", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="writing-style.md"):
+        load_response_skill(tmp_path)
+
+
+def test_empty_skill_is_rejected(tmp_path):
+    (tmp_path / "SKILL.md").write_text(" \n", encoding="utf-8")
+    with pytest.raises(ValueError, match="пусты"):
+        load_response_skill(tmp_path)

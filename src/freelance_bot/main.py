@@ -804,6 +804,7 @@ async def run(settings: Settings) -> None:
         filter_prompt_path=settings.ai_filter_prompt_path,
         response_prompt_path=settings.ai_response_prompt_path,
         portfolio_path=settings.ai_portfolio_path,
+        response_skill_path=settings.ai_response_skill_path,
     )
     profi_source: ProfiSource | None = None
     try:

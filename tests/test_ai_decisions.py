@@ -175,7 +175,7 @@ def test_advisor_loads_full_portfolio_and_guards_live_catalog_edits() -> None:
         filter_model="GigaChat-2-Pro", filter_fallback_model="GigaChat-2-Max",
         response_model="GigaChat-3-Ultra", min_score=0,
     )
-    assert len(advisor._portfolio_documents) == 10
+    assert len(advisor._portfolio_documents) == 13
     changed = [dict(case) for case in advisor._portfolio]
     changed[0]["url"] = "https://example.com/not-verified"
     with pytest.raises(ValueError, match="Markdown-карточками"):
