@@ -15,6 +15,8 @@ from typing import Any, Self
 from gigachat import GigaChat
 from gigachat.models import Chat, JsonSchemaResponseFormat, Messages, MessagesRole
 
+from freelance_bot.config import Settings
+from freelance_bot.deepseek import DeepSeekClient
 from freelance_bot.models import AiAssessment, Project
 from freelance_bot.portfolio import (
     load_portfolio_documents,
@@ -25,7 +27,6 @@ from freelance_bot.portfolio import (
 )
 
 LOGGER = logging.getLogger(__name__)
-MAX_PROJECT_TEXT_LENGTH = 6_000
 RETRY_ATTEMPTS = 3
 
 
@@ -57,7 +58,7 @@ async def _with_retry[T](operation: Callable[[], Awaitable[T]], label: str) -> T
                 raise
             delay = float(2 ** (attempt - 1))
             LOGGER.warning(
-                "%s: GigaChat вернул некорректный ответ, повтор %d/%d через %.0f с",
+                "%s: AI вернул некорректный ответ, повтор %d/%d через %.0f с",
                 label,
                 attempt + 1,
                 RETRY_ATTEMPTS,
@@ -65,7 +66,7 @@ async def _with_retry[T](operation: Callable[[], Awaitable[T]], label: str) -> T
                 exc_info=True,
             )
             await asyncio.sleep(delay)
-    raise RuntimeError("Недостижимая ветка повтора GigaChat")
+    raise RuntimeError("Недостижимая ветка повтора AI")
 
 
 def _response_text(response: Any) -> str:
@@ -77,7 +78,7 @@ def _response_text(response: Any) -> str:
             return content.strip()
     messages = getattr(response, "messages", None)
     if not messages:
-        raise RuntimeError("GigaChat вернул ответ без сообщений")
+        raise RuntimeError("AI вернул ответ без сообщений")
     content = getattr(messages[0], "content", None)
     if isinstance(content, str):
         return content.strip()
@@ -86,7 +87,7 @@ def _response_text(response: Any) -> str:
         text = "".join(parts).strip()
         if text:
             return text
-    raise RuntimeError("GigaChat вернул ответ без текста")
+    raise RuntimeError("AI вернул ответ без текста")
 
 
 def _format_response_paragraphs(body: str) -> str:
@@ -126,7 +127,7 @@ def _parse_filter_result(text: str) -> tuple[str, str, str]:
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start < 0 or end <= start:
-        raise ValueError("GigaChat не вернул JSON с оценкой проекта")
+        raise ValueError("AI не вернул JSON с оценкой проекта")
     payload = json.loads(cleaned[start : end + 1])
     fields = {"decision", "reason", "summary"}
     if not isinstance(payload, dict) or set(payload) != fields:
@@ -140,17 +141,18 @@ def _parse_filter_result(text: str) -> tuple[str, str, str]:
     if decision not in {"accept", "reject", "unclear"}:
         raise ValueError("Неизвестное решение отбора")
     if not reason:
-        raise ValueError("GigaChat не объяснил оценку проекта")
+        raise ValueError("AI не объяснил оценку проекта")
     if decision == "accept" and not summary:
-        raise ValueError("GigaChat не описал задачу клиента")
+        raise ValueError("AI не описал задачу клиента")
     return decision, reason, summary if decision == "accept" else ""
 
 
 def _project_context(project: Project) -> str:
     # Kwork returns HTML fragments in descriptions. Tags and entities make the
-    # project harder for the model to read and waste the limited input budget.
+    # project harder for the model to read. Preserve the whole description:
+    # requirements near the end can change whether the project is suitable.
     description = re.sub(r"<[^>]+>", " ", project.description)
-    description = " ".join(html.unescape(description).split())[:MAX_PROJECT_TEXT_LENGTH]
+    description = " ".join(html.unescape(description).split())
     return "\n".join(
         (
             f"Площадка: {project.source}",
@@ -162,7 +164,7 @@ def _project_context(project: Project) -> str:
     )
 
 
-class GigaChatProjectAdvisor:
+class ProjectAdvisor:
     def __init__(
         self,
         *,
@@ -182,7 +184,7 @@ class GigaChatProjectAdvisor:
         verify_accepted: bool = True,
     ) -> None:
         if not profile.strip():
-            raise ValueError("Профиль исполнителя для GigaChat пуст")
+            raise ValueError("Профиль исполнителя для AI пуст")
         if not filter_prompt.strip():
             raise ValueError("Промпт для отбора проектов пуст")
         if not response_prompt.strip():
@@ -196,9 +198,9 @@ class GigaChatProjectAdvisor:
         }
         if ca_bundle_file is not None:
             common["ca_bundle_file"] = str(ca_bundle_file)
-        self._filter_client = GigaChat(model=filter_model, **common)
-        self._filter_fallback_client = GigaChat(model=filter_fallback_model, **common)
-        self._response_client = GigaChat(model=response_model, **common)
+        self._filter_client = self._make_client(filter_model, common)
+        self._filter_fallback_client = self._make_client(filter_fallback_model, common)
+        self._response_client = self._make_client(response_model, common)
         self._filter_model = filter_model
         self._filter_fallback_model = filter_fallback_model
         self._response_model = response_model
@@ -218,6 +220,17 @@ class GigaChatProjectAdvisor:
         self._verify_accepted = verify_accepted
         self._stack: AsyncExitStack | None = None
 
+    def _make_client(self, model: str, common: dict[str, Any]) -> Any:
+        raise NotImplementedError
+
+    @property
+    def filter_model(self) -> str:
+        return self._filter_model
+
+    @property
+    def filter_fallback_model(self) -> str:
+        return self._filter_fallback_model
+
     @property
     def response_model(self) -> str:
         return self._response_model
@@ -226,7 +239,8 @@ class GigaChatProjectAdvisor:
     def filter_revision(self) -> str:
         """Identify the rules used to assess a project, including live config edits."""
         rules = json.dumps(
-            ["decision-v6", self._filter_prompt, self._filter_model,
+            ["decision-v7-full-description", type(self).__name__, self._filter_prompt,
+             self._filter_model,
              getattr(self, "_filter_fallback_model", self._response_model),
              getattr(self, "_verify_accepted", False)],
             ensure_ascii=False,
@@ -337,12 +351,15 @@ class GigaChatProjectAdvisor:
         )
 
         async def request_filter(
-            client: GigaChat, requested_model: str
+            client: Any, requested_model: str
         ) -> tuple[str, str, str, str]:
             # Keep the model in the payload as well as in the client settings so
             # SDK defaults can never silently route the request to another tier.
             request = filter_request.model_copy(update={"model": requested_model}, deep=True)
             response = await client.achat(request)
+            choices = getattr(response, "choices", [])
+            if choices and getattr(choices[0], "finish_reason", None) == "length":
+                raise ValueError("AI-оценка обрезана по лимиту токенов")
             decision, reason, summary = _parse_filter_result(_response_text(response))
             actual_model = str(getattr(response, "model", "") or requested_model)
             return decision, reason, summary, actual_model
@@ -374,7 +391,6 @@ class GigaChatProjectAdvisor:
             r"<[^>]+>", " ", project.description
         )).split())
         if (decision == "accept" and source_text
-                and len(source_text) <= MAX_PROJECT_TEXT_LENGTH
                 and getattr(self, "_verify_accepted", False) and not used_fallback
                 and fallback_model != self._filter_model):
             # Independent decision: do not anchor the verifier with Pro's explanation.
@@ -382,11 +398,9 @@ class GigaChatProjectAdvisor:
                 lambda: request_filter(fallback_client, fallback_model),
                 f"проверка кандидата {project.key}",
             )
-        if decision == "accept" and (
-            not source_text or len(source_text) > MAX_PROJECT_TEXT_LENGTH
-        ):
+        if decision == "accept" and not source_text:
             decision, summary = "unclear", ""
-            reason = "Описание отсутствует или обрезано"
+            reason = "Описание отсутствует"
         suitable = decision == "accept"
         score = 100 if suitable else 0  # Compatibility with historical database rows only.
         assessment = AiAssessment(
@@ -586,3 +600,50 @@ class GigaChatProjectAdvisor:
                     + ". Верни только полный исправленный JSON с полями body и case_ids.",
                 ))
         raise ValueError("Отклик не прошёл проверку: " + "; ".join(issues))
+
+
+class GigaChatProjectAdvisor(ProjectAdvisor):
+    def _make_client(self, model: str, common: dict[str, Any]) -> GigaChat:
+        return GigaChat(model=model, **common)
+
+
+class DeepSeekProjectAdvisor(ProjectAdvisor):
+    def _make_client(self, model: str, common: dict[str, Any]) -> DeepSeekClient:
+        return DeepSeekClient(
+            api_key=common["credentials"], base_url=common["base_url"], model=model,
+        )
+
+
+def create_advisor(settings: Settings) -> ProjectAdvisor:
+    advisor_type: type[ProjectAdvisor]
+    if settings.ai_provider == "deepseek":
+        advisor_type = DeepSeekProjectAdvisor
+        options = {
+            "credentials": settings.deepseek_api_key,
+            "scope": "",
+            "base_url": settings.deepseek_base_url,
+            "ca_bundle_file": None,
+            "filter_model": settings.deepseek_filter_model,
+            "filter_fallback_model": settings.deepseek_filter_fallback_model,
+            "response_model": settings.deepseek_response_model,
+        }
+    else:
+        advisor_type = GigaChatProjectAdvisor
+        options = {
+            "credentials": settings.gigachat_credentials,
+            "scope": settings.gigachat_scope,
+            "base_url": settings.gigachat_base_url,
+            "ca_bundle_file": settings.gigachat_ca_bundle_file,
+            "filter_model": settings.gigachat_filter_model,
+            "filter_fallback_model": settings.gigachat_filter_fallback_model,
+            "response_model": settings.gigachat_response_model,
+        }
+    return advisor_type.from_paths(
+        profile_path=settings.ai_profile_path,
+        filter_prompt_path=settings.ai_filter_prompt_path,
+        response_prompt_path=settings.ai_response_prompt_path,
+        portfolio_path=settings.ai_portfolio_path,
+        min_score=settings.ai_min_score,
+        verify_accepted=settings.ai_verify_accepted,
+        **options,
+    )

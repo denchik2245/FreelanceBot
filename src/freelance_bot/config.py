@@ -47,6 +47,12 @@ class Settings:
     gigachat_response_model: str
     ai_portfolio_path: Path = Path("config/portfolio.json")
     ai_verify_accepted: bool = True
+    ai_provider: str = "gigachat"
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_filter_model: str = "deepseek-flash"
+    deepseek_filter_fallback_model: str = "deepseek-flash"
+    deepseek_response_model: str = "deepseek-flash"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -54,12 +60,34 @@ class Settings:
         if interval < 60:
             raise ValueError("POLL_INTERVAL_SECONDS должен быть не меньше 60")
         ai_enabled = _bool("AI_ENABLED")
+        ai_provider = os.getenv("AI_PROVIDER", "gigachat").strip().lower()
+        if ai_provider not in {"gigachat", "deepseek"}:
+            raise ValueError("AI_PROVIDER должен быть gigachat или deepseek")
         ai_min_score = int(os.getenv("AI_MIN_SCORE", "70"))
         if not 0 <= ai_min_score <= 100:
             raise ValueError("AI_MIN_SCORE должен быть от 0 до 100")
         gigachat_credentials = os.getenv("GIGACHAT_CREDENTIALS", "").strip()
-        if ai_enabled and not gigachat_credentials:
+        if ai_enabled and ai_provider == "gigachat" and not gigachat_credentials:
             raise ValueError("AI_ENABLED=true, но не задан обязательный GIGACHAT_CREDENTIALS")
+        deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        if ai_enabled and ai_provider == "deepseek" and not deepseek_api_key:
+            raise ValueError("AI_ENABLED=true, но не задан обязательный DEEPSEEK_API_KEY")
+        deepseek_base_url = os.getenv(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+        ).strip().rstrip("/")
+        if ai_enabled and ai_provider == "deepseek" and not deepseek_base_url.startswith("https://"):
+            raise ValueError("DEEPSEEK_BASE_URL должен использовать HTTPS")
+        deepseek_filter_model = os.getenv("DEEPSEEK_FILTER_MODEL", "deepseek-flash").strip()
+        deepseek_filter_fallback_model = os.getenv(
+            "DEEPSEEK_FILTER_FALLBACK_MODEL", "deepseek-flash"
+        ).strip()
+        deepseek_response_model = os.getenv("DEEPSEEK_RESPONSE_MODEL", "deepseek-flash").strip()
+        if ai_enabled and ai_provider == "deepseek" and (
+            not deepseek_filter_model
+            or not deepseek_filter_fallback_model
+            or not deepseek_response_model
+        ):
+            raise ValueError("AI-модели DeepSeek не могут быть пустыми")
         gigachat_filter_model = os.getenv("GIGACHAT_FILTER_MODEL", "GigaChat-2-Pro").strip()
         gigachat_filter_fallback_model = os.getenv(
             "GIGACHAT_FILTER_FALLBACK_MODEL", "GigaChat-2-Max"
@@ -67,7 +95,7 @@ class Settings:
         gigachat_response_model = os.getenv(
             "GIGACHAT_RESPONSE_MODEL", "GigaChat-3-Ultra"
         ).strip()
-        if ai_enabled and (
+        if ai_enabled and ai_provider == "gigachat" and (
             not gigachat_filter_model
             or not gigachat_filter_fallback_model
             or not gigachat_response_model
@@ -103,6 +131,12 @@ class Settings:
             send_existing_on_first_run=_bool("SEND_EXISTING_ON_FIRST_RUN"),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             ai_enabled=ai_enabled,
+            ai_provider=ai_provider,
+            deepseek_api_key=deepseek_api_key,
+            deepseek_base_url=deepseek_base_url,
+            deepseek_filter_model=deepseek_filter_model,
+            deepseek_filter_fallback_model=deepseek_filter_fallback_model,
+            deepseek_response_model=deepseek_response_model,
             ai_portfolio_path=Path(os.getenv("AI_PORTFOLIO_PATH", "config/portfolio.json")),
             ai_verify_accepted=_bool("AI_VERIFY_ACCEPTED", True),
             ai_min_score=ai_min_score,

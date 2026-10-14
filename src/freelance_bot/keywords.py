@@ -4,7 +4,7 @@ import unicodedata
 from freelance_bot.models import Project
 
 # The first-stage filter is deliberately broad: false positives are cheaper than
-# false negatives because GigaChat performs the final semantic assessment.
+# false negatives because AI performs the final semantic assessment.
 PROJECT_KEYWORDS: tuple[str, ...] = (
     "сайт",
     "веб",
@@ -29,6 +29,10 @@ PROJECT_KEYWORDS: tuple[str, ...] = (
     "figma",
     "tilda",
     "тильда",
+    "тильд",
+    "wordpress",
+    "вордпресс",
+    "webflow",
     "zero block",
     "зеро блок",
     "прототип",
@@ -36,7 +40,7 @@ PROJECT_KEYWORDS: tuple[str, ...] = (
 )
 PREFIX_KEYWORDS = frozenset(
     {"сайт", "веб", "лендинг", "лэндинг", "дизайн", "редизайн", "интерфейс",
-     "экран", "приложени", "прототип", "макет"}
+     "экран", "приложени", "прототип", "макет", "тильд", "вордпресс"}
 )
 
 

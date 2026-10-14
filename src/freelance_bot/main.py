@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import aiohttp
 from dotenv import load_dotenv
 
-from freelance_bot.ai import GigaChatProjectAdvisor, InsufficientPortfolioCasesError
+from freelance_bot.ai import InsufficientPortfolioCasesError, ProjectAdvisor, create_advisor
 from freelance_bot.config import Settings
 from freelance_bot.config_texts import ConfigTextManager
 from freelance_bot.fl_mail import GmailFlMailbox, format_fl_notification
@@ -143,7 +143,7 @@ async def _monitor_projects(
     kwork_lock: asyncio.Lock,
     profi_lock: asyncio.Lock,
     bot: VkBot,
-    advisor: GigaChatProjectAdvisor | None,
+    advisor: ProjectAdvisor | None,
     project_filters: ProjectFilterManager,
 ) -> None:
     while True:
@@ -391,7 +391,7 @@ async def _listen_for_commands(
     fl_lock: asyncio.Lock,
     kwork_lock: asyncio.Lock,
     profi_lock: asyncio.Lock,
-    advisor: GigaChatProjectAdvisor | None,
+    advisor: ProjectAdvisor | None,
     config_texts: ConfigTextManager,
     project_filters: ProjectFilterManager,
 ) -> None:
@@ -621,7 +621,7 @@ async def _listen_for_commands(
             assessment = store.get_ai_assessment(project.key)
             if advisor is None:
                 await bot.send_text(
-                    "⚠️ GigaChat отключён. Проверьте AI_ENABLED и ключ API.",
+                    "⚠️ AI отключён. Проверьте AI_ENABLED и ключ API.",
                     keyboard=False,
                 )
                 return
@@ -798,7 +798,7 @@ async def run(settings: Settings) -> None:
     store = ProjectStore(settings.database_path)
     project_filters = ProjectFilterManager(store, default_ai_score=settings.ai_min_score)
     kwork_source = KworkSource(settings.kwork_login, settings.kwork_password)
-    advisor: GigaChatProjectAdvisor | None = None
+    advisor: ProjectAdvisor | None = None
     config_texts = ConfigTextManager(
         profile_path=settings.ai_profile_path,
         filter_prompt_path=settings.ai_filter_prompt_path,
@@ -808,27 +808,14 @@ async def run(settings: Settings) -> None:
     profi_source: ProfiSource | None = None
     try:
         if settings.ai_enabled:
-            advisor = GigaChatProjectAdvisor.from_paths(
-                profile_path=settings.ai_profile_path,
-                filter_prompt_path=settings.ai_filter_prompt_path,
-                response_prompt_path=settings.ai_response_prompt_path,
-                portfolio_path=settings.ai_portfolio_path,
-                credentials=settings.gigachat_credentials,
-                scope=settings.gigachat_scope,
-                base_url=settings.gigachat_base_url,
-                ca_bundle_file=settings.gigachat_ca_bundle_file,
-                filter_model=settings.gigachat_filter_model,
-                filter_fallback_model=settings.gigachat_filter_fallback_model,
-                response_model=settings.gigachat_response_model,
-                min_score=settings.ai_min_score,
-                verify_accepted=settings.ai_verify_accepted,
-            )
+            advisor = create_advisor(settings)
             await advisor.__aenter__()
             LOGGER.info(
-                "AI включён: фильтр=%s, резерв=%s, отклики=%s, отправка только accept",
-                settings.gigachat_filter_model,
-                settings.gigachat_filter_fallback_model,
-                settings.gigachat_response_model,
+                "AI включён: провайдер=%s, фильтр=%s, резерв=%s, отклики=%s, только accept",
+                settings.ai_provider,
+                advisor.filter_model,
+                advisor.filter_fallback_model,
+                advisor.response_model,
             )
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             fl_source = FlSource(session)

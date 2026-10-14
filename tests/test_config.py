@@ -46,6 +46,49 @@ def test_ai_rejects_empty_model(monkeypatch: pytest.MonkeyPatch) -> None:
         Settings.from_env()
 
 
+def test_deepseek_needs_its_own_key_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("AI_ENABLED", "true")
+    monkeypatch.setenv("AI_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.delenv("GIGACHAT_CREDENTIALS", raising=False)
+    monkeypatch.setenv("GIGACHAT_FILTER_MODEL", "")
+    settings = Settings.from_env()
+    assert settings.ai_provider == "deepseek"
+    assert settings.deepseek_filter_model == "deepseek-flash"
+    assert settings.deepseek_filter_fallback_model == "deepseek-flash"
+    assert settings.deepseek_response_model == "deepseek-flash"
+
+
+def test_deepseek_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("AI_ENABLED", "true")
+    monkeypatch.setenv("AI_PROVIDER", "deepseek")
+    monkeypatch.setenv("GIGACHAT_CREDENTIALS", "giga-key")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="DEEPSEEK_API_KEY"):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize("field,value,match", [
+    ("AI_PROVIDER", "other", "AI_PROVIDER"),
+    ("DEEPSEEK_BASE_URL", "http://api.deepseek.com", "HTTPS"),
+    ("DEEPSEEK_FILTER_MODEL", "", "не могут быть пустыми"),
+    ("DEEPSEEK_FILTER_FALLBACK_MODEL", "", "не могут быть пустыми"),
+    ("DEEPSEEK_RESPONSE_MODEL", "", "не могут быть пустыми"),
+])
+def test_deepseek_invalid_settings(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: str, match: str,
+) -> None:
+    _base_environment(monkeypatch)
+    monkeypatch.setenv("AI_ENABLED", "true")
+    monkeypatch.setenv("AI_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv(field, value)
+    with pytest.raises(ValueError, match=match):
+        Settings.from_env()
+
+
 def test_profi_credentials_must_be_configured_together(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

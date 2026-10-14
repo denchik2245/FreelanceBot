@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from freelance_bot.ai import GigaChatProjectAdvisor
+from freelance_bot.ai import create_advisor
 from freelance_bot.config import Settings
 from freelance_bot.models import Project
 
@@ -33,18 +33,7 @@ async def evaluate(args: argparse.Namespace) -> None:
     settings = Settings.from_env()
     cases = json.loads(args.dataset.read_text(encoding="utf-8"))
     rows = []
-    advisor = GigaChatProjectAdvisor.from_paths(
-        profile_path=settings.ai_profile_path,
-        filter_prompt_path=settings.ai_filter_prompt_path,
-        response_prompt_path=settings.ai_response_prompt_path,
-        portfolio_path=settings.ai_portfolio_path,
-        credentials=settings.gigachat_credentials, scope=settings.gigachat_scope,
-        base_url=settings.gigachat_base_url, ca_bundle_file=settings.gigachat_ca_bundle_file,
-        filter_model=settings.gigachat_filter_model,
-        filter_fallback_model=settings.gigachat_filter_fallback_model,
-        response_model=settings.gigachat_response_model, min_score=70,
-        verify_accepted=settings.ai_verify_accepted,
-    )
+    advisor = create_advisor(settings)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     async with advisor:
         for case in cases[:args.limit]:
@@ -77,15 +66,15 @@ async def evaluate(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, default=Path("eval/projects.json"))
+    parser.add_argument("--dataset", type=Path, default=Path("eval/projects-expanded.json"))
     parser.add_argument("--output", type=Path, default=Path("data/eval-current.json"))
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--responses", action="store_true")
     parser.add_argument("--responses-only", action="store_true")
-    parser.add_argument("--live", action="store_true", help="Use paid GigaChat API tokens")
+    parser.add_argument("--live", action="store_true", help="Use paid AI API tokens")
     args = parser.parse_args()
     if not args.live:
-        parser.error("Model calls require --live (uses GigaChat API tokens)")
+        parser.error("Model calls require --live (uses paid AI API tokens)")
     if args.limit < 1:
         parser.error("--limit must be positive")
     asyncio.run(evaluate(args))

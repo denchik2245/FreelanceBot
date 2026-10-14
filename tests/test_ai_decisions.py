@@ -277,10 +277,42 @@ async def test_verifier_failure_never_sends_lite_accept(monkeypatch) -> None:
         await advisor.assess(_project())
 
 
-async def test_truncated_input_cannot_pass() -> None:
-    advisor, _, _ = _advisor(85)
-    project = replace(_project(), description=_project().description + " x" * 4000)
-    assert (await advisor.assess(project)).decision == "unclear"
+async def test_long_description_can_pass_and_reaches_both_models_in_full() -> None:
+    advisor, primary, verifier = _advisor(85)
+    advisor._verify_accepted = True
+    description = (_project().description + " Описание разделов." * 600
+                   + " В КОНЦЕ: сайт на Tilda со стандартной формой.")
+    assert len(description) > 6000
+    verifier.responses = [json.dumps({
+        "decision": "accept", "reason": "Нужен сайт на Tilda", "summary": "Собрать сайт на Tilda.",
+    })]
+    project = replace(_project(), description=description)
+
+    assert (await advisor.assess(project)).decision == "accept"
+    for client in (primary, verifier):
+        assert len(client.requests) == 1
+        assert description in client.requests[0].messages[1].content
+
+
+async def test_rejecting_requirements_at_end_of_long_description_reach_model() -> None:
+    advisor, primary, verifier = _advisor(25)
+    description = ("Разработать сайт. " + "Описание разделов и материалов. " * 300
+                   + "В КОНЦЕ: собственный backend и личный кабинет с ролями.")
+    project = replace(_project(), description=description)
+
+    assert (await advisor.assess(project)).decision == "reject"
+    assert description in primary.requests[0].messages[1].content
+    assert verifier.requests == []
+
+
+async def test_writer_receives_long_description_in_full() -> None:
+    advisor, _, writer = _advisor(85)
+    description = ("Нужен макет лендинга. " + "Требования к оформлению. " * 400
+                   + "В КОНЦЕ: название клиента Лавандовый сад.")
+    project = replace(_project(), description=description)
+
+    await advisor.generate_response(project)
+    assert description in writer.requests[0].messages[1].content
 
 
 async def test_both_models_can_accept_tilda_project_without_literal_quote() -> None:

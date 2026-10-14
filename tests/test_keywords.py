@@ -30,3 +30,11 @@ def test_mobile_app_screens_reach_semantic_filter() -> None:
     assert matches_project_keywords(project)
     assert "экран" in matching_project_keywords(project)
     assert "приложени" in matching_project_keywords(project)
+
+
+def test_tilda_tasks_and_cms_projects_reach_semantic_filter() -> None:
+    for title in (
+        "Помощь по Тильде", "Нужен специалист по Тильде", "Настроить WordPress",
+        "Сборка на Вордпрессе", "Перенос на Webflow",
+    ):
+        assert matches_project_keywords(_project(title)), title
