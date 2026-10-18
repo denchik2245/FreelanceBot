@@ -299,9 +299,8 @@ async def _monitor_fl_mail(
 def _format_statistics(store: ProjectStore) -> str:
     statistics = store.project_statistics()
     ai_rejected = store.ai_rejected_statistics()
-    daily_statistics = store.daily_project_statistics(display_timezone=DISPLAY_TZ)
     started_at = store.statistics_started_at().astimezone(DISPLAY_TZ)
-    labels = (("day", "За 24 часа"), ("week", "За 7 дней"), ("month", "За 30 дней"))
+    labels = (("week", "За 7 дней"), ("month", "За 30 дней"))
     lines = [
         "📊 Статистика подходящих проектов",
         f"Отсчёт с {started_at:%d.%m.%Y %H:%M}",
@@ -321,15 +320,7 @@ def _format_statistics(store: ProjectStore) -> str:
                 f"Отклонено AI — {ai_rejected[period]}",
             )
         )
-    lines.extend(("", _format_feedback_summary(store), "", "По дням с начала месяца"))
-    weekend_labels = {5: "суббота", 6: "воскресенье"}
-    for index, (day, counts) in enumerate(reversed(daily_statistics.items())):
-        if index:
-            lines.append("")
-        weekend = weekend_labels.get(day.weekday())
-        date_label = f"{day:%d.%m.%Y}" + (f" ({weekend})" if weekend else "")
-        total = counts["Kwork"] + counts["FL.ru"] + counts["Profi.ru"]
-        lines.append(f"{date_label} — подходящих {total}")
+    lines.extend(("", _format_feedback_summary(store)))
     return "\n".join(lines)
 
 
@@ -355,7 +346,6 @@ def _format_feedback_summary(store: ProjectStore) -> str:
             (
                 f"Откликнулся → Написали мне — {percent(counts['client_replied'], total)}",
                 f"Откликнулся → Заказали — {percent(counts['ordered'], total)}",
-                f"Доля заказов у других — {percent(counts['client_chose_other'], total)}",
             )
         )
         if refusals:
@@ -371,14 +361,8 @@ def _format_feedback_summary(store: ProjectStore) -> str:
     for source, counts in by_source.items():
         if source == "Profi.ru" and not any(counts.values()):
             continue
-        lines.extend(block(source, counts, refusals=source == "FL.ru"))
-    lines.extend(
-        (
-            "",
-            "Проценты считаются от числа откликов на соответствующей бирже.",
-            "«Написали мне» сохраняется, даже если затем заказали или отказали.",
-        )
-    )
+        label = "Kwork.ru" if source == "Kwork" else source
+        lines.extend(block(label, counts, refusals=source == "FL.ru"))
     return "\n".join(lines)
 
 

@@ -131,7 +131,7 @@ def test_summary_uses_each_source_denominator_and_fl_refusals(tmp_path: Path) ->
     store.change_response_counter("Kwork", "ordered")
     store.change_response_counter("FL.ru", "client_refused")
     message = _format_feedback_summary(store)
-    kwork_block = message.split("\nKwork\n")[1].split("\nFL.ru\n")[0]
+    kwork_block = message.split("\nKwork.ru\n")[1].split("\nFL.ru\n")[0]
     fl_block = message.split("\nFL.ru\n")[1]
     assert "Откликнулся → Написали мне — 25,0%" in kwork_block
     assert "Откликнулся → Заказали — 25,0%" in kwork_block

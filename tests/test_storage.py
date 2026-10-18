@@ -194,10 +194,7 @@ def test_daily_statistics_uses_display_timezone_and_includes_empty_days(tmp_path
     store.close()
 
 
-def test_formatted_statistics_labels_weekends() -> None:
-    saturday = datetime(2026, 8, 8).date()
-    sunday = datetime(2026, 8, 9).date()
-
+def test_formatted_statistics_shows_week_and_month_summary() -> None:
     class FakeStore:
         def feedback_counts_by_source(self):
             return {
@@ -217,24 +214,14 @@ def test_formatted_statistics_labels_weekends() -> None:
         def ai_rejected_statistics(self) -> dict[str, int]:
             return {"day": 0, "week": 0, "month": 0}
 
-        def daily_project_statistics(self, **_: object) -> dict[object, dict[str, int]]:
-            return {
-                saturday: {"Kwork": 1, "FL.ru": 0, "Profi.ru": 0, "rejected": 2},
-                sunday: {"Kwork": 0, "FL.ru": 1, "Profi.ru": 0, "rejected": 3},
-            }
-
         def statistics_started_at(self) -> datetime:
             return datetime(2026, 8, 1, tzinfo=timezone.utc)
 
     message = _format_statistics(FakeStore())  # type: ignore[arg-type]
 
-    assert "09.08.2026 (воскресенье) — подходящих 1" in message
-    assert "08.08.2026 (суббота) — подходящих 1" in message
-    assert "По дням с начала месяца" in message
-    daily_section = message.split("По дням с начала месяца", maxsplit=1)[1]
-    assert "отклонено AI" not in daily_section
-    assert "09.08.2026 (воскресенье) — подходящих 1\n\n08.08.2026" in daily_section
-    assert "09.08.2026 (воскресенье) — Kwork" not in message
+    assert "За 7 дней" in message
+    assert "За 30 дней" in message
+    assert "📨 Отклики" in message
 
 
 def test_store_migrates_and_saves_project_description(tmp_path: Path) -> None:
