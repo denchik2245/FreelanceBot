@@ -54,9 +54,22 @@ async def test_filter_does_not_receive_profile_and_ignores_legacy_threshold() ->
     assert "SECRET PROFILE" not in str(client.requests[0].messages)
 
 
-async def test_missing_description_cannot_pass() -> None:
-    advisor, _, _ = _advisor(85)
+async def test_clear_title_can_pass_without_description_and_is_verified() -> None:
+    advisor, primary, verifier = _advisor(85)
+    advisor._verify_accepted = True
+    verifier.responses = [json.dumps({
+        "decision": "accept", "reason": "Дизайн лендинга", "summary": "Нужен дизайн лендинга.",
+    })]
     assessment = await advisor.assess(replace(_project(), description=""))
+    assert assessment.suitable
+    for client in (primary, verifier):
+        assert len(client.requests) == 1
+        assert "Дизайн лендинга" in client.requests[0].messages[1].content
+
+
+async def test_missing_title_and_description_cannot_pass_on_category_alone() -> None:
+    advisor, _, _ = _advisor(85)
+    assessment = await advisor.assess(replace(_project(), title=" ", description="<p>&nbsp;</p>"))
     assert assessment.decision == "unclear"
     assert not assessment.suitable
 

@@ -242,7 +242,7 @@ class ProjectAdvisor:
     def filter_revision(self) -> str:
         """Identify the rules used to assess a project, including live config edits."""
         rules = json.dumps(
-            ["decision-v7-full-description", type(self).__name__, self._filter_prompt,
+            ["decision-v8-title-and-description", type(self).__name__, self._filter_prompt,
              self._filter_model,
              getattr(self, "_filter_fallback_model", self._response_model),
              getattr(self, "_verify_accepted", False)],
@@ -396,7 +396,7 @@ class ProjectAdvisor:
                 f"резервная AI-оценка {project.key}",
             )
         source_text = " ".join(html.unescape(re.sub(
-            r"<[^>]+>", " ", project.description
+            r"<[^>]+>", " ", f"{project.title} {project.description}"
         )).split())
         if (decision == "accept" and source_text
                 and getattr(self, "_verify_accepted", False) and not used_fallback
@@ -408,7 +408,7 @@ class ProjectAdvisor:
             )
         if decision == "accept" and not source_text:
             decision, summary = "unclear", ""
-            reason = "Описание отсутствует"
+            reason = "Название и описание отсутствуют"
         suitable = decision == "accept"
         score = 100 if suitable else 0  # Compatibility with historical database rows only.
         assessment = AiAssessment(

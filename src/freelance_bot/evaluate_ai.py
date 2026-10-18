@@ -66,7 +66,7 @@ async def evaluate(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, default=Path("eval/projects-expanded.json"))
+    parser.add_argument("--dataset", type=Path, default=Path("eval/primary-task-projects.json"))
     parser.add_argument("--output", type=Path, default=Path("data/eval-current.json"))
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--responses", action="store_true")

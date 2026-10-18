@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from freelance_bot.keywords import matches_project_keywords, matching_project_keywords
 from freelance_bot.models import Project
 
@@ -38,3 +41,21 @@ def test_tilda_tasks_and_cms_projects_reach_semantic_filter() -> None:
         "Сборка на Вордпрессе", "Перенос на Webflow",
     ):
         assert matches_project_keywords(_project(title)), title
+
+
+def test_cyrillic_figma_audits_and_woocommerce_reach_semantic_filter() -> None:
+    for title in (
+        "Перенести в Фигму", "Макет в Фигме", "Юзабилити-аудит",
+        "Usability audit", "Настроить WooCommerce",
+    ):
+        assert matches_project_keywords(_project(title)), title
+
+
+def test_wanted_evaluation_projects_are_not_lost_before_ai() -> None:
+    cases = json.loads(Path("eval/primary-task-projects.json").read_text(encoding="utf-8"))
+    missed = [
+        case["id"] for case in cases
+        if case["expected"] == "accept"
+        and not matches_project_keywords(_project(case["title"], case["description"]))
+    ]
+    assert missed == []
