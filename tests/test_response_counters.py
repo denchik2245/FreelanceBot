@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from freelance_bot.main import _format_feedback_summary, _listen_for_commands
-from freelance_bot.models import Project
+from freelance_bot.models import AiAssessment, Project
 from freelance_bot.storage import ProjectStore
 from freelance_bot.vk import BotCommand, parse_command, responses_keyboard_json
 
@@ -118,6 +118,49 @@ def test_migration_preserves_only_counted_outcomes_once(tmp_path: Path) -> None:
     assert store.feedback_counts()["responded"] == 0
     assert store.feedback_counts()["client_replied"] == 0
     assert store.get_project_feedback("Kwork:1") == ("responded", "client_replied")
+    store.close()
+
+
+def test_full_statistics_reset_clears_responses_and_preserves_history(tmp_path: Path) -> None:
+    path = tmp_path / "bot.sqlite3"
+    store = ProjectStore(path)
+    store.set_state("statistics_started_at", "2000-01-01 00:00:00")
+    project = add_response(store, "Kwork", 1)
+    store.mark_seen(project.key, project.source)
+    store.remember_ai_assessment(
+        AiAssessment(project.key, True, 90, "Подходит", "", "test", "test")
+    )
+    store.mark_ai_rejected("FL.ru:2")
+    with store._connection:
+        store._connection.execute(
+            "UPDATE project_ai_assessments SET analyzed_at = datetime('now', '-1 hour')"
+        )
+        store._connection.execute(
+            "UPDATE project_ai_rejections SET rejected_at = datetime('now', '-1 hour')"
+        )
+    store.change_response_counter("Kwork", "client_replied", event_id="reply-1")
+    store.change_response_counter("Kwork", "ordered", event_id="order-1")
+    assert store.project_statistics()["Kwork"]["day"] == 1
+    assert store.ai_rejected_statistics()["day"] == 1
+
+    started_at = store.reset_statistics()
+    assert store.statistics_started_at() == started_at
+    assert not any(store.feedback_counts_by_source()["Kwork"].values())
+    assert not any(store.project_statistics()["Kwork"].values())
+    assert not any(store.ai_rejected_statistics().values())
+    assert store.get_project_feedback(project.key) == ("responded", None)
+    assert store.is_seen(project.key)
+    store.close()
+
+    store = ProjectStore(path)
+    assert not any(store.feedback_counts().values())
+    assert store.get_project(project.key) == project
+    assert store.get_ai_assessment(project.key) is not None
+    assert not store.change_response_counter("Kwork", "ordered", event_id="order-1")
+    add_response(store, "FL.ru", 3)
+    store.change_response_counter("FL.ru", "ordered", event_id="new-order")
+    assert store.feedback_counts()["responded"] == 1
+    assert store.feedback_counts()["ordered"] == 1
     store.close()
 
 

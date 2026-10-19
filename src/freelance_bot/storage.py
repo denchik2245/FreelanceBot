@@ -730,10 +730,18 @@ class ProjectStore:
         # Use the same precision so an assessment created in this millisecond is not
         # accidentally sorted before the freshly reset boundary.
         started_at = started_at.replace(microsecond=started_at.microsecond // 1000 * 1000)
-        self.set_state(
-            "statistics_started_at",
-            f"{started_at:%Y-%m-%d %H:%M:%S}.{started_at.microsecond // 1000:03d}",
-        )
+        with self._connection:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO state(name, value) VALUES (?, ?)",
+                (
+                    "statistics_started_at",
+                    f"{started_at:%Y-%m-%d %H:%M:%S}.{started_at.microsecond // 1000:03d}",
+                ),
+            )
+            self._connection.execute(
+                "UPDATE project_feedback SET stats_counted = 0 WHERE decision = 'responded'"
+            )
+            self._connection.execute("UPDATE response_counters SET count = 0")
         return started_at
 
     def get_state(self, name: str) -> str | None:
