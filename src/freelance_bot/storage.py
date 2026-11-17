@@ -3,6 +3,7 @@ from datetime import UTC, date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from freelance_bot.models import AiAssessment, Project
+from freelance_bot.response_log import ResponseLog, ensure_schema, seed_from_feedback
 
 RESPONSE_SOURCES = ("Kwork", "FL.ru", "Profi.ru")
 RESPONSE_OUTCOMES = ("client_replied", "client_chose_other", "client_refused", "ordered")
@@ -208,7 +209,15 @@ class ProjectStore:
             self._connection.execute(
                 "INSERT INTO state(name, value) VALUES ('response_counters_migrated', '1')"
             )
+        ensure_schema(self._connection)
         self._connection.commit()
+        self.responses = ResponseLog(self._connection)
+        if self.get_state("tracker:seeded") != "1":
+            with self._connection:
+                seed_from_feedback(self._connection, self.get_project, self.get_ai_assessment)
+                self._connection.execute(
+                    "INSERT OR REPLACE INTO state(name, value) VALUES ('tracker:seeded', '1')"
+                )
 
     def is_seen(self, key: str) -> bool:
         row = self._connection.execute(
@@ -418,15 +427,14 @@ class ProjectStore:
         if self.get_project(project_key) is None:
             raise KeyError(project_key)
         current = self.get_project_feedback(project_key)
+        # Outcomes now live per project in the response log, so the legacy per-source
+        # counters no longer block undoing a mistaken «Откликнулся».
         if current is not None and current[0] == decision:
-            self._check_response_removal(project_key)
             self._connection.execute(
                 "DELETE FROM project_feedback WHERE project_key = ?", (project_key,)
             )
             self._connection.commit()
             return None
-        if current is not None and current[0] == "responded":
-            self._check_response_removal(project_key)
         self._connection.execute(
             """
             INSERT INTO project_feedback(

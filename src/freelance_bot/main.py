@@ -12,10 +12,12 @@ from freelance_bot.fl_mail import GmailFlMailbox, format_fl_notification
 from freelance_bot.keywords import matches_project_keywords
 from freelance_bot.models import Project
 from freelance_bot.project_filters import ProjectFilterManager
+from freelance_bot.response_log import format_digest, format_panel
 from freelance_bot.sources.fl import FlSource
 from freelance_bot.sources.kwork import KworkSource
 from freelance_bot.sources.profi import ProfiSource
 from freelance_bot.storage import ProjectStore
+from freelance_bot.tracker import DIGEST_STATE, digest_week
 from freelance_bot.vk import (
     COMMAND_CHANGE_RESPONSE_COUNTER,
     COMMAND_CLEAR_CHAT,
@@ -42,6 +44,7 @@ from freelance_bot.vk import (
     COMMAND_TOGGLE_PROFI,
     COMMAND_UPDATE_FILTER,
     COMMAND_VIEW_CONFIG_TEXT,
+    COMMAND_WEEKLY_DIGEST,
     COMMAND_WRITE_RESPONSE,
     DISPLAY_TZ,
     BotCommand,
@@ -319,50 +322,32 @@ def _format_statistics(store: ProjectStore) -> str:
                 f"Отклонено AI — {ai_rejected[period]}",
             )
         )
-    lines.extend(("", _format_feedback_summary(store)))
+    lines.extend(("", format_panel(store.responses)))
     return "\n".join(lines)
 
 
-def _format_feedback_summary(store: ProjectStore) -> str:
-    by_source = store.feedback_counts_by_source()
+def _digest_due(store: ProjectStore, settings: Settings, now: datetime) -> bool:
+    if settings.weekly_digest_hour < 0:
+        return False
+    local = now.astimezone(DISPLAY_TZ)
+    if local.isoweekday() != 7 or local.hour < settings.weekly_digest_hour:
+        return False
+    return store.get_state(DIGEST_STATE) != digest_week(now)
 
-    def percent(count: int, total: int) -> str:
-        return f"{count / total * 100:.1f}%".replace(".", ",") if total else "нет откликов"
 
-    def block(label: str, counts: dict[str, int], *, refusals: bool = False) -> list[str]:
-        total = counts["responded"]
-        lines = [
-            "",
-            label,
-            f"Откликнулся — {total}",
-            f"Написали мне — {counts['client_replied']}",
-            f"Заказали — {counts['ordered']}",
-            f"Заказали у другого — {counts['client_chose_other']}",
-        ]
-        if refusals:
-            lines.append(f"Отказали — {counts['client_refused']}")
-        lines.extend(
-            (
-                f"Откликнулся → Написали мне — {percent(counts['client_replied'], total)}",
-                f"Откликнулся → Заказали — {percent(counts['ordered'], total)}",
-            )
-        )
-        if refusals:
-            lines.append(f"Доля отказов — {percent(counts['client_refused'], total)}")
-        return lines
-
-    totals = {
-        metric: sum(counts[metric] for counts in by_source.values())
-        for metric in ("responded", "client_replied", "ordered", "client_chose_other")
-    }
-    lines = ["📨 Отклики"]
-    lines.extend(block("Всего", totals))
-    for source, counts in by_source.items():
-        if source == "Profi.ru" and not any(counts.values()):
-            continue
-        label = "Kwork.ru" if source == "Kwork" else source
-        lines.extend(block(label, counts, refusals=source == "FL.ru"))
-    return "\n".join(lines)
+async def _weekly_digest(settings: Settings, store: ProjectStore, bot: VkBot) -> None:
+    while True:
+        now = datetime.now(UTC)
+        try:
+            if _digest_due(store, settings, now):
+                await bot.send_text(
+                    format_digest(store.responses, now=now, display_tz=DISPLAY_TZ)
+                )
+                store.set_state(DIGEST_STATE, digest_week(now))
+                LOGGER.info("Недельная сводка откликов отправлена")
+        except Exception:
+            LOGGER.exception("Не удалось отправить недельную сводку откликов")
+        await asyncio.sleep(600)
 
 
 async def _listen_for_commands(
@@ -378,8 +363,6 @@ async def _listen_for_commands(
     config_texts: ConfigTextManager,
     project_filters: ProjectFilterManager,
 ) -> None:
-    response_source = "Kwork"
-
     async def edit_project_message(event: BotCommand, message: str, keyboard: str) -> None:
         if event.event_id is not None and event.conversation_message_id is not None:
             try:
@@ -406,20 +389,10 @@ async def _listen_for_commands(
         )
 
     async def show_responses(note: str | None = None) -> None:
-        message = (
-            f"{_format_feedback_summary(store)}\n\n"
-            f"Кнопки сейчас меняют счетчики {response_source}.\n"
-            "Нажатие на результат добавляет 1, «−1» рядом отменяет ошибку.\n"
-            "Смена результата: уменьшите прежний и добавьте новый."
-        )
+        message = format_panel(store.responses)
         if note:
             message += f"\n\n⚠️ {note}"
-        include_profi = profi_source is not None or any(
-            store.feedback_counts_by_source()["Profi.ru"].values()
-        )
-        await bot.set_persistent_keyboard(
-            responses_keyboard_json(response_source, include_profi=include_profi)
-        )
+        await bot.set_persistent_keyboard(responses_keyboard_json())
         await bot.replace_ui(message)
 
     async def show_notice(message: str, keyboard: str) -> None:
@@ -486,7 +459,6 @@ async def _listen_for_commands(
         )
 
     async def handle(event: BotCommand) -> None:
-        nonlocal response_source
         command = event.name
         if command == COMMAND_SOURCE_SETTINGS:
             await show_sources()
@@ -575,6 +547,14 @@ async def _listen_for_commands(
                 await show_responses(str(error))
                 return
             project = store.get_project(event.project_key)
+            if project is not None:
+                try:
+                    if selected_decision == "responded":
+                        store.responses.record(project, store.get_ai_assessment(project.key))
+                    else:
+                        store.responses.discard(project.key)
+                except Exception:
+                    LOGGER.exception("Не удалось записать отклик в трекер: %s", project.key)
             if (
                 project is not None
                 and event.event_id is not None
@@ -589,24 +569,15 @@ async def _listen_for_commands(
                     project_keyboard_json(project.key, selected_decision),
                 )
             return
-        if command == COMMAND_RESPONSE_SOURCE:
-            if event.source is not None:
-                response_source = event.source
+        if command in {COMMAND_RESPONSE_SOURCE, COMMAND_CHANGE_RESPONSE_COUNTER}:
+            # Old counter keyboards may still be open in the client after the upgrade.
             await show_responses()
             return
-        if command == COMMAND_CHANGE_RESPONSE_COUNTER:
-            if event.source is None or event.outcome is None or event.delta is None:
-                await show_responses("Не удалось распознать действие. Используйте текущие кнопки.")
-                return
-            response_source = event.source
-            try:
-                store.change_response_counter(
-                    event.source, event.outcome, event.delta, event_id=event.event_id
-                )
-            except ValueError as error:
-                await show_responses(str(error))
-                return
-            await show_responses()
+        if command == COMMAND_WEEKLY_DIGEST:
+            await show_notice(
+                format_digest(store.responses, display_tz=DISPLAY_TZ),
+                responses_keyboard_json(),
+            )
             return
         if command == COMMAND_MENU:
             await show_menu()
@@ -622,7 +593,7 @@ async def _listen_for_commands(
             await show_notice(_format_statistics(store), statistics_keyboard_json())
             return
         if command == COMMAND_CLEAR_RESPONSE_STATISTICS:
-            store.reset_feedback_statistics()
+            # The tracker keeps full history; the old reset button is gone.
             await show_responses()
             return
         if command == COMMAND_CLEAR_CHAT:
@@ -775,6 +746,7 @@ async def run(settings: Settings) -> None:
                     project_filters,
                 ),
             ]
+            background_tasks.append(_weekly_digest(settings, store, bot))
             if fl_mailbox is not None:
                 background_tasks.append(
                     _monitor_fl_mail(settings, store, fl_mailbox, bot)

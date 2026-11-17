@@ -48,6 +48,7 @@ class Settings:
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_filter_model: str = "deepseek-flash"
     deepseek_filter_fallback_model: str = "deepseek-flash"
+    weekly_digest_hour: int = 20
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -104,6 +105,9 @@ class Settings:
         if fl_mail_interval < 30:
             raise ValueError("FL_MAIL_POLL_INTERVAL_SECONDS должен быть не меньше 30")
         ca_bundle = os.getenv("GIGACHAT_CA_BUNDLE_FILE", "").strip()
+        weekly_digest_hour = int(os.getenv("WEEKLY_DIGEST_HOUR", "20"))
+        if not -1 <= weekly_digest_hour <= 23:
+            raise ValueError("WEEKLY_DIGEST_HOUR должен быть от 0 до 23 или -1 для отключения")
         return cls(
             vk_group_token=_required("VK_GROUP_TOKEN"),
             vk_user_id=int(_required("VK_USER_ID")),
@@ -136,4 +140,5 @@ class Settings:
             gigachat_ca_bundle_file=Path(ca_bundle) if ca_bundle else None,
             gigachat_filter_model=gigachat_filter_model,
             gigachat_filter_fallback_model=gigachat_filter_fallback_model,
+            weekly_digest_hour=weekly_digest_hour,
         )

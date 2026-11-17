@@ -41,6 +41,7 @@ COMMAND_SOURCE_SETTINGS = "source_settings"
 COMMAND_FILTER_SETTINGS = "filter_settings"
 COMMAND_EDIT_FILTER = "edit_filter"
 COMMAND_UPDATE_FILTER = "update_filter"
+COMMAND_WEEKLY_DIGEST = "weekly_digest"
 FILTER_NAMES = {"score", "budget"}
 DISPLAY_TZ = timezone(timedelta(hours=5))
 ALL_COMMANDS = {
@@ -70,6 +71,7 @@ ALL_COMMANDS = {
     COMMAND_FILTER_SETTINGS,
     COMMAND_EDIT_FILTER,
     COMMAND_UPDATE_FILTER,
+    COMMAND_WEEKLY_DIGEST,
 }
 
 
@@ -369,59 +371,23 @@ def statistics_keyboard_json() -> str:
     )
 
 
-def responses_keyboard_json(source: str = "Kwork", *, include_profi: bool = False) -> str:
-    if source not in RESPONSE_SOURCES:
-        raise ValueError("Неизвестная биржа")
+def responses_keyboard_json() -> str:
+    """Outcomes are filled by the weekly review, so the panel has no counters to press."""
 
-    def button(label: str, payload: dict[str, Any], color: str = "secondary") -> dict[str, Any]:
+    def button(label: str, command: str) -> dict[str, Any]:
         return {
             "action": {
                 "type": "callback",
                 "label": label,
-                "payload": json.dumps(payload, ensure_ascii=False),
+                "payload": json.dumps({"command": command}, ensure_ascii=False),
             },
-            "color": color,
+            "color": "secondary",
         }
 
-    sources = RESPONSE_SOURCES if include_profi or source == "Profi.ru" else RESPONSE_SOURCES[:2]
     buttons = [
-        [
-            button(
-                f"✅ {item}" if item == source else item,
-                {"command": COMMAND_RESPONSE_SOURCE, "source": item},
-                "primary" if item == source else "secondary",
-            )
-            for item in sources
-        ]
+        [button("📈 Сводка за неделю", COMMAND_WEEKLY_DIGEST)],
+        json.loads(back_keyboard_json())["buttons"][0],
     ]
-    outcomes = [
-        ("Заказали у другого", "client_chose_other"),
-        ("Написали мне", "client_replied"),
-        ("Отказали", "client_refused"),
-        ("Заказали", "ordered"),
-    ]
-    for label, outcome in outcomes:
-        if outcome == "client_refused" and source != "FL.ru":
-            continue
-        payload = {"command": COMMAND_CHANGE_RESPONSE_COUNTER, "source": source, "outcome": outcome}
-        buttons.append(
-            [
-                button(
-                    label,
-                    {**payload, "delta": 1},
-                    "positive" if outcome == "ordered" else "secondary",
-                ),
-                button("−1", {**payload, "delta": -1}),
-            ]
-        )
-    buttons.append(
-        [
-            button(
-                "🗑 Очистить статистику", {"command": COMMAND_CLEAR_RESPONSE_STATISTICS}, "negative"
-            )
-        ]
-    )
-    buttons.append(json.loads(back_keyboard_json())["buttons"][0])
     return json.dumps(
         {"one_time": False, "inline": False, "buttons": buttons},
         ensure_ascii=False,
@@ -525,6 +491,7 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
         "настройки": COMMAND_SETTINGS,
         "статистика": COMMAND_STATISTICS,
         "отклики": COMMAND_RESPONSES,
+        "сводка": COMMAND_WEEKLY_DIGEST,
         "/filters": COMMAND_FILTER_SETTINGS,
         "/sources": COMMAND_SOURCE_SETTINGS,
     }

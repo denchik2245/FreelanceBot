@@ -6,7 +6,6 @@ import pytest
 from freelance_bot.models import AiAssessment, Project
 from freelance_bot.vk import (
     COMMAND_CHANGE_RESPONSE_COUNTER,
-    COMMAND_CLEAR_RESPONSE_STATISTICS,
     COMMAND_CONFIG_TEXTS,
     COMMAND_FILTER_SETTINGS,
     COMMAND_RESPONDED,
@@ -110,37 +109,15 @@ def test_project_decision_changes_button_state() -> None:
     assert responded[0]["color"] == "positive"
 
 
-@pytest.mark.parametrize("source", ["Kwork", "FL.ru", "Profi.ru"])
-def test_responses_have_source_counters_without_project_actions(source: str) -> None:
-    keyboard = json.loads(responses_keyboard_json(source))
-    assert keyboard["inline"] is False
-    rows = keyboard["buttons"][1:-2]
-    labels = [row[0]["action"]["label"] for row in rows]
-    expected = ["Заказали у другого", "Написали мне", "Заказали"]
-    if source == "FL.ru":
-        expected.insert(2, "Отказали")
-    assert labels == expected
-    assert len(keyboard["buttons"]) <= 10
-    for row in rows:
-        for index, button in enumerate(row):
-            event = parse_command({"payload": button["action"]["payload"]})
-            assert event is not None
-            assert event.name == COMMAND_CHANGE_RESPONSE_COUNTER
-            assert event.source == source
-            assert event.project_key is None
-            assert event.delta == (1 if index == 0 else -1)
-        assert row[1]["action"]["label"] == "−1"
-    for button in keyboard["buttons"][0]:
-        event = parse_command({"payload": button["action"]["payload"]})
-        assert event.name == "response_source"
-        assert event.source in {"Kwork", "FL.ru", "Profi.ru"}
-
-
-def test_empty_responses_keep_statistics_reset_action() -> None:
+def test_responses_panel_has_digest_and_no_manual_counters() -> None:
     keyboard = json.loads(responses_keyboard_json())
-    event = parse_command({"payload": keyboard["buttons"][-2][0]["action"]["payload"]})
-    assert event is not None
-    assert event.name == COMMAND_CLEAR_RESPONSE_STATISTICS
+    assert keyboard["inline"] is False
+    events = [
+        parse_command({"payload": row[0]["action"]["payload"]}) for row in keyboard["buttons"]
+    ]
+    assert [event.name for event in events] == ["weekly_digest", "menu"]
+    assert all(len(row) == 1 for row in keyboard["buttons"])
+    assert parse_command({"text": "сводка"}).name == "weekly_digest"
 
 
 @pytest.mark.parametrize("delta", [0, 2, True, "1", None])

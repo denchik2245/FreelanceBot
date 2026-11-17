@@ -224,15 +224,15 @@ def test_daily_statistics_uses_display_timezone_and_includes_empty_days(tmp_path
 
 
 def test_formatted_statistics_shows_week_and_month_summary() -> None:
+    class FakeResponses:
+        def entries(self, **_):
+            return []
+
+        def last_review(self):
+            return None
+
     class FakeStore:
-        def feedback_counts_by_source(self):
-            return {
-                source: dict.fromkeys(
-                    ("responded", "client_replied", "client_chose_other", "client_refused", "ordered"),
-                    0,
-                )
-                for source in ("Kwork", "FL.ru", "Profi.ru")
-            }
+        responses = FakeResponses()
 
         def project_statistics(self) -> dict[str, dict[str, int]]:
             return {
