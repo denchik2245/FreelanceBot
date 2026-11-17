@@ -283,3 +283,23 @@ async def test_responded_button_writes_tracker(tmp_path: Path) -> None:
     assert bot.messages[1].startswith("📨 Отклики")
     assert bot.messages[2].startswith("📈 Отклики")
     store.close()
+
+
+def test_level_is_rated_at_response_time(tmp_path: Path) -> None:
+    path = tmp_path / "bot.sqlite3"
+    store = ProjectStore(path)
+    item = project("Kwork", 12, offers=None, hired=None, hours_ago=24 * 30)
+    remember(store, item)
+    responded = item.published_at + timedelta(hours=1)
+    store.responses.record(item, None, now=responded)
+    assert "двух недель" not in (store.responses.get(item.key).level_reason or "")
+    # Entries rated with the old rule are fixed once on startup.
+    with store._connection:
+        store._connection.execute(
+            "UPDATE response_log SET origin = 'legacy', level = 'В', level_reason = 'x'"
+        )
+        store._connection.execute("DELETE FROM state WHERE name = 'tracker:relevel_v2'")
+    store.close()
+    store = ProjectStore(path)
+    assert store.responses.get(item.key).level_reason != "x"
+    store.close()

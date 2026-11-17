@@ -119,12 +119,38 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
     )
 
 
-def _rating(project: Project, assessment: AiAssessment | None) -> tuple[str, str]:
+def _rating(
+    project: Project, assessment: AiAssessment | None, at: datetime
+) -> tuple[str, str]:
     # Imported lazily: project_rating → project_filters → storage → this module.
     from freelance_bot.project_rating import rate_project
 
-    rating = rate_project(project, assessment)
+    # Rate as of the response: the "older than two weeks" rule must not fire later.
+    rating = rate_project(project, assessment, now=at)
     return rating.level, rating.reason
+
+
+def relevel_legacy(
+    connection: sqlite3.Connection, load_project: Any, load_assessment: Any
+) -> int:
+    """Recompute levels of seeded entries that were once rated against the seeding date."""
+    rows = connection.execute(
+        "SELECT project_key, responded_at FROM response_log WHERE origin = 'legacy'"
+    ).fetchall()
+    changed = 0
+    for project_key, responded_at in rows:
+        project = load_project(project_key)
+        if project is None:
+            continue
+        level, reason = _rating(
+            project, load_assessment(project_key), parse_timestamp(responded_at) or _now()
+        )
+        connection.execute(
+            "UPDATE response_log SET level = ?, level_reason = ? WHERE project_key = ?",
+            (level, reason, project_key),
+        )
+        changed += 1
+    return changed
 
 
 def seed_from_feedback(
@@ -162,7 +188,7 @@ def _insert_snapshot(
     *,
     origin: str,
 ) -> None:
-    level, reason = _rating(project, assessment)
+    level, reason = _rating(project, assessment, responded_at)
     connection.execute(
         """
         INSERT INTO response_log(

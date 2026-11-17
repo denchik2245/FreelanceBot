@@ -3,7 +3,12 @@ from datetime import UTC, date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from freelance_bot.models import AiAssessment, Project
-from freelance_bot.response_log import ResponseLog, ensure_schema, seed_from_feedback
+from freelance_bot.response_log import (
+    ResponseLog,
+    ensure_schema,
+    relevel_legacy,
+    seed_from_feedback,
+)
 
 RESPONSE_SOURCES = ("Kwork", "FL.ru", "Profi.ru")
 RESPONSE_OUTCOMES = ("client_replied", "client_chose_other", "client_refused", "ordered")
@@ -217,6 +222,12 @@ class ProjectStore:
                 seed_from_feedback(self._connection, self.get_project, self.get_ai_assessment)
                 self._connection.execute(
                     "INSERT OR REPLACE INTO state(name, value) VALUES ('tracker:seeded', '1')"
+                )
+        if self.get_state("tracker:relevel_v2") != "1":
+            with self._connection:
+                relevel_legacy(self._connection, self.get_project, self.get_ai_assessment)
+                self._connection.execute(
+                    "INSERT OR REPLACE INTO state(name, value) VALUES ('tracker:relevel_v2', '1')"
                 )
 
     def is_seen(self, key: str) -> bool:
