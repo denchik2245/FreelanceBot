@@ -6,7 +6,6 @@ import pytest
 
 from freelance_bot.ai import (
     GigaChatProjectAdvisor,
-    _format_response_paragraphs,
     _parse_filter_result,
     _project_context,
 )
@@ -66,39 +65,12 @@ def _advisor(score: int) -> tuple[GigaChatProjectAdvisor, FakeClient, FakeClient
     advisor = object.__new__(GigaChatProjectAdvisor)
     advisor._filter_client = filter_client
     advisor._filter_fallback_client = response_client
-    advisor._response_client = response_client
     advisor._filter_model = "GigaChat-2"
     advisor._filter_fallback_model = "GigaChat-2-Max"
-    advisor._response_model = "GigaChat-2-Max"
     advisor._min_score = 70
-    advisor._profile = "Веб-дизайнер, работаю в Figma."
     advisor._filter_prompt = "Оцени проект и верни JSON."
-    advisor._response_prompt = "Напиши персональный отклик."
     advisor._stack = None
     return advisor, filter_client, response_client
-
-
-def test_long_response_is_split_at_sentence_boundaries() -> None:
-    sentences = [
-        "Здравствуйте!",
-        "Я изучил описание задачи и вижу, что важна понятная структура главной страницы.",
-        "Сначала предложу последовательность блоков и покажу, как объяснить сложную услугу.",
-        "Затем подготовлю макет страницы и проверю его на мобильном экране.",
-        "У меня есть подходящий проект, где я решал похожую задачу для сложной услуги.",
-        "Пришлите список разделов и материалы, чтобы я уточнил состав первой страницы.",
-    ]
-    response = " ".join(sentences)
-
-    formatted = _format_response_paragraphs(response)
-
-    assert "\n\n" in formatted
-    assert formatted.replace("\n\n", " ") == response
-    assert all(paragraph.endswith(("!", ".")) for paragraph in formatted.split("\n\n"))
-
-
-def test_existing_response_paragraphs_are_preserved() -> None:
-    response = "Здравствуйте!\n\nПредложу структуру.\n\nПришлите материалы."
-    assert _format_response_paragraphs(response) == response
 
 
 def test_parse_filter_result_accepts_json_code_block() -> None:
@@ -161,52 +133,6 @@ async def test_advisor_skips_response_for_unsuitable_project() -> None:
 
 
 @pytest.mark.asyncio
-async def test_advisor_generates_response_on_demand() -> None:
-    advisor, filter_client, response_client = _advisor(25)
-    response_text = await advisor.generate_response(_project())
-
-    assert "Готов обсудить" in response_text
-    assert filter_client.requests == []
-    assert len(response_client.requests) == 1
-    assert response_client.requests[0].model == "GigaChat-2-Max"
-
-    regenerated = await advisor.generate_response(_project(), previous_response=response_text)
-    assert regenerated != response_text
-    assert "Предлагаю начать" in regenerated
-    assert len(response_client.requests) == 2
-    second_messages = response_client.requests[1].messages
-    assert response_text in second_messages[1].content
-    assert "повторная генерация" in second_messages[0].content
-
-
-@pytest.mark.asyncio
-async def test_advisor_rewrites_response_with_selected_style() -> None:
-    advisor, _, response_client = _advisor(25)
-
-    await advisor.generate_response(
-        _project(),
-        previous_response="Здравствуйте! Готов обсудить проект подробно.",
-        variation="shorter",
-    )
-
-    system_prompt = response_client.requests[0].messages[0].content
-    assert "заметно короче" in system_prompt
-    assert "верни только готовый отклик" in system_prompt
-
-
-@pytest.mark.asyncio
-async def test_advisor_rejects_unknown_response_variation() -> None:
-    advisor, _, _ = _advisor(25)
-
-    with pytest.raises(ValueError, match="Неизвестный вариант"):
-        await advisor.generate_response(
-            _project(),
-            previous_response="Предыдущий отклик",
-            variation="sarcastic",
-        )
-
-
-@pytest.mark.asyncio
 async def test_advisor_retries_invalid_gigachat_response(monkeypatch: pytest.MonkeyPatch) -> None:
     advisor, filter_client, _ = _advisor(85)
     filter_client.responses.insert(0, RuntimeError("пустой ответ"))
@@ -222,7 +148,7 @@ async def test_advisor_retries_invalid_gigachat_response(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_advisor_falls_back_to_response_model(
+async def test_advisor_falls_back_to_filter_fallback_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     advisor, filter_client, response_client = _advisor(85)
@@ -252,13 +178,11 @@ async def test_advisor_falls_back_to_response_model(
 def test_filter_revision_tracks_selection_rules_only() -> None:
     advisor, _, _ = _advisor(85)
     original = advisor.filter_revision
-    advisor.update_config_text("response", "Другой стиль отклика")
     advisor.set_min_score(80)
     assert advisor.filter_revision == original
     advisor.update_config_text("filter", "Исключить email-письма")
     revised = advisor.filter_revision
     assert revised != original
-    advisor.update_config_text("profile", "Дизайн мобильных приложений")
     assert advisor.filter_revision == revised
 
 

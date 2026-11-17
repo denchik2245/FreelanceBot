@@ -35,25 +35,19 @@ class Settings:
     log_level: str
     ai_enabled: bool
     ai_min_score: int
-    ai_profile_path: Path
     ai_filter_prompt_path: Path
-    ai_response_prompt_path: Path
     gigachat_credentials: str
     gigachat_scope: str
     gigachat_base_url: str
     gigachat_ca_bundle_file: Path | None
     gigachat_filter_model: str
     gigachat_filter_fallback_model: str
-    gigachat_response_model: str
-    ai_portfolio_path: Path = Path("config/portfolio.json")
     ai_verify_accepted: bool = True
     ai_provider: str = "gigachat"
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_filter_model: str = "deepseek-flash"
     deepseek_filter_fallback_model: str = "deepseek-flash"
-    deepseek_response_model: str = "deepseek-flash"
-    ai_response_skill_path: Path = Path("config/skills/freelance-response")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -82,24 +76,18 @@ class Settings:
         deepseek_filter_fallback_model = os.getenv(
             "DEEPSEEK_FILTER_FALLBACK_MODEL", "deepseek-flash"
         ).strip()
-        deepseek_response_model = os.getenv("DEEPSEEK_RESPONSE_MODEL", "deepseek-flash").strip()
         if ai_enabled and ai_provider == "deepseek" and (
             not deepseek_filter_model
             or not deepseek_filter_fallback_model
-            or not deepseek_response_model
         ):
             raise ValueError("AI-модели DeepSeek не могут быть пустыми")
         gigachat_filter_model = os.getenv("GIGACHAT_FILTER_MODEL", "GigaChat-2-Pro").strip()
         gigachat_filter_fallback_model = os.getenv(
             "GIGACHAT_FILTER_FALLBACK_MODEL", "GigaChat-2-Max"
         ).strip()
-        gigachat_response_model = os.getenv(
-            "GIGACHAT_RESPONSE_MODEL", "GigaChat-3-Ultra"
-        ).strip()
         if ai_enabled and ai_provider == "gigachat" and (
             not gigachat_filter_model
             or not gigachat_filter_fallback_model
-            or not gigachat_response_model
         ):
             raise ValueError("AI-модели GigaChat не могут быть пустыми")
         profi_login = os.getenv("PROFI_LOGIN", "").strip()
@@ -137,19 +125,10 @@ class Settings:
             deepseek_base_url=deepseek_base_url,
             deepseek_filter_model=deepseek_filter_model,
             deepseek_filter_fallback_model=deepseek_filter_fallback_model,
-            deepseek_response_model=deepseek_response_model,
-            ai_portfolio_path=Path(os.getenv("AI_PORTFOLIO_PATH", "config/portfolio.json")),
             ai_verify_accepted=_bool("AI_VERIFY_ACCEPTED", True),
             ai_min_score=ai_min_score,
-            ai_profile_path=Path(os.getenv("AI_PROFILE_PATH", "config/freelancer_profile.txt")),
             ai_filter_prompt_path=Path(
                 os.getenv("AI_FILTER_PROMPT_PATH", "config/prompts/project_filter.txt")
-            ),
-            ai_response_prompt_path=Path(
-                os.getenv("AI_RESPONSE_PROMPT_PATH", "config/prompts/response_writer.txt")
-            ),
-            ai_response_skill_path=Path(
-                os.getenv("AI_RESPONSE_SKILL_PATH", "config/skills/freelance-response")
             ),
             gigachat_credentials=gigachat_credentials,
             gigachat_scope=os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS").strip(),
@@ -157,5 +136,4 @@ class Settings:
             gigachat_ca_bundle_file=Path(ca_bundle) if ca_bundle else None,
             gigachat_filter_model=gigachat_filter_model,
             gigachat_filter_fallback_model=gigachat_filter_fallback_model,
-            gigachat_response_model=gigachat_response_model,
         )

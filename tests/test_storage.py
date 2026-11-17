@@ -7,6 +7,37 @@ from freelance_bot.models import AiAssessment, Project
 from freelance_bot.storage import ProjectStore
 
 
+def test_restart_preserves_projects_excluded_from_statistics(tmp_path: Path) -> None:
+    path = tmp_path / "restart.sqlite3"
+    store = ProjectStore(path)
+    store.mark_seen("Kwork:excluded", "Kwork", count_for_statistics=False)
+    store.mark_seen("FL.ru:counted", "FL.ru")
+    before = store._connection.execute(
+        "SELECT project_key, source FROM seen_projects ORDER BY project_key"
+    ).fetchall()
+    store.close()
+    store = ProjectStore(path)
+    after = store._connection.execute(
+        "SELECT project_key, source FROM seen_projects ORDER BY project_key"
+    ).fetchall()
+    assert after == before == [("FL.ru:counted", "FL.ru"), ("Kwork:excluded", None)]
+    store.close()
+
+
+def test_source_column_backfills_legacy_projects_once(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-source.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE seen_projects (project_key TEXT PRIMARY KEY, first_seen_at TEXT)"
+        )
+        connection.execute("INSERT INTO seen_projects VALUES ('Kwork:old', '2026-01-01')")
+    store = ProjectStore(path)
+    assert store._connection.execute(
+        "SELECT source FROM seen_projects WHERE project_key = 'Kwork:old'"
+    ).fetchone() == ("Kwork",)
+    store.close()
+
+
 def test_store(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path / "bot.sqlite3")
     assert not store.is_seen("fl:1")
@@ -57,9 +88,7 @@ def test_store(tmp_path: Path) -> None:
         summary="Клиенту нужен дизайн лендинга.",
     )
     store.remember_ai_assessment(assessment)
-    store.remember_ai_response(project.key, "Новый отклик", "GigaChat-2-Max")
     assert store.get_ai_assessment(project.key) == assessment
-    assert store.get_ai_response(project.key) == "Новый отклик"
     statistics = store.project_statistics()
     assert statistics["Kwork"]["day"] == 1
     assert statistics["FL.ru"]["day"] == 0

@@ -13,6 +13,9 @@ class Project:
     category: str
     published_at: datetime | None = None
     publication_id: str = ""
+    offers_count: int | None = None
+    client_projects_count: int | None = None
+    client_hired_percent: float | None = None
 
     @property
     def canonical_key(self) -> str:
@@ -38,3 +41,4 @@ class AiAssessment:
     filter_revision: str = ""
     decision: str = ""
     evidence: str = ""
+    requirements_clear: bool | None = None

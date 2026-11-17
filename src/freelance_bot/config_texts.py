@@ -6,8 +6,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from freelance_bot.portfolio import load_portfolio_documents, parse_portfolio
-
 MAX_CONFIG_TEXT_BYTES = 100_000
 
 
@@ -19,27 +17,16 @@ class EditableConfigText:
 
 
 class ConfigTextManager:
-    """Read and atomically replace AI prompts, profile and validated portfolio exposed in VK."""
+    """Read and atomically replace the project filter prompt exposed in VK."""
 
     def __init__(
         self,
         *,
-        profile_path: Path,
         filter_prompt_path: Path,
-        response_prompt_path: Path,
-        portfolio_path: Path | None = None,
-        response_skill_path: Path | None = None,
     ) -> None:
-        self._response_skill_path = response_skill_path
         self._items = {
-            "profile": EditableConfigText("profile", "Профиль исполнителя", profile_path),
             "filter": EditableConfigText("filter", "Промпт отбора", filter_prompt_path),
-            "response": EditableConfigText("response", "Промпт отклика", response_prompt_path),
         }
-        if portfolio_path is not None:
-            self._items["portfolio"] = EditableConfigText(
-                "portfolio", "Портфолио (JSON)", portfolio_path
-            )
 
     def items(self) -> tuple[EditableConfigText, ...]:
         return tuple(self._items.values())
@@ -62,15 +49,6 @@ class ConfigTextManager:
         normalized = text.strip()
         if not normalized:
             raise ValueError("AI-текст не может быть пустым")
-        if key == "portfolio":
-            cases = parse_portfolio(normalized)
-            if (self._response_skill_path or item.path.with_name("portfolio-index.md").exists()
-                    or (item.path.parent / "skills/freelance-response/references").is_dir()):
-                load_portfolio_documents(
-                    item.path, cases,
-                    references_path=(self._response_skill_path / "references"
-                                     if self._response_skill_path else None),
-                )
         encoded = normalized.encode("utf-8")
         if len(encoded) > MAX_CONFIG_TEXT_BYTES:
             raise ValueError("AI-текст больше 100 КБ")

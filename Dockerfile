@@ -6,6 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 RUN pip install --no-cache-dir "playwright>=1.50,<2"
+# Playwright's bundled Node needs libatomic before its dependency installer can run.
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
 RUN python -m playwright install --with-deps chromium
 
 COPY src ./src

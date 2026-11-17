@@ -43,6 +43,23 @@ def _project_value(project: Any, name: str, default: Any = None) -> Any:
     return default
 
 
+def _nonnegative_number(raw: Any, *, maximum: float | None = None) -> float | None:
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= value < float("inf") or (maximum is not None and value > maximum):
+        return None
+    return value
+
+
+def _count(raw: Any) -> int | None:
+    value = _nonnegative_number(raw)
+    return int(value) if value is not None and value.is_integer() else None
+
+
 class KworkSource:
     def __init__(self, login: str, password: str) -> None:
         from kwork import Kwork
@@ -116,6 +133,11 @@ class KworkSource:
                     # date_confirm identifies that particular publication, while staying
                     # stable during ordinary polling of the feed.
                     publication_id=str(int(date_confirm)) if date_confirm else "",
+                    offers_count=_count(_project_value(raw, "offers")),
+                    client_projects_count=_count(_project_value(raw, "user_projects_count")),
+                    client_hired_percent=_nonnegative_number(
+                        _project_value(raw, "user_hired_percent"), maximum=100,
+                    ),
                 )
                 page_projects.append(project)
                 unique.setdefault(project.key, project)

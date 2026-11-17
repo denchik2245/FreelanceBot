@@ -89,6 +89,18 @@ def parse_projects(html: str, category: str) -> list[Project]:
             external_id = match.group(1) if match else ""
         if not external_id:
             continue
+        footer = card.select_one(".b-post__foot")
+        offers = None
+        if footer is not None:
+            # Read individual controls, so dates or digits in the brief cannot
+            # accidentally become part of an offer count.
+            for node in footer.select("a"):
+                offers = re.fullmatch(
+                    r"(\d[\d \u00a0\u202f]*)\s+(?:отклик\w*|ответ\w*)",
+                    _text(node), re.IGNORECASE,
+                )
+                if offers is not None:
+                    break
         projects.append(
             Project(
                 source="FL.ru",
@@ -99,6 +111,7 @@ def parse_projects(html: str, category: str) -> list[Project]:
                 url=urljoin(BASE_URL, href),
                 category=category,
                 published_at=_card_published_at(card),
+                offers_count=int(re.sub(r"\s", "", offers.group(1))) if offers else None,
             )
         )
     return projects

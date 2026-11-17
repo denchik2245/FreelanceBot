@@ -44,21 +44,18 @@ async def evaluate(args: argparse.Namespace) -> None:
             )
             row = dict(case)
             try:
-                if not args.responses_only:
-                    result = await advisor.assess(project)
-                    row.update(decision=result.decision, reason=result.reason,
-                               model=result.filter_model)
-                if args.responses_only or (args.responses and case.get("expected") == "accept"):
-                    row["response"] = await advisor.generate_response(project)
+                result = await advisor.assess(project)
+                row.update(decision=result.decision, reason=result.reason,
+                           model=result.filter_model, requirements_clear=result.requirements_clear)
             except Exception as error:  # noqa: BLE001 - report a failed evaluation without secrets
                 # Do not serialize request headers, credentials or transport exception bodies.
                 row["error"] = type(error).__name__
             rows.append(row)
             args.output.write_text(json.dumps({
                 "filter_revision": advisor.filter_revision,
-                "metrics": None if args.responses_only else metrics(rows), "rows": rows,
+                "metrics": metrics(rows), "rows": rows,
             }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            status = row.get("error", row.get("decision", "response generated"))
+            status = row.get("error", row.get("decision", "unknown"))
             print(f"{case['id']}: {status}", flush=True)
             if "error" in row:
                 break  # Stop on infrastructure failure instead of spending the whole batch.
@@ -69,8 +66,6 @@ def main() -> None:
     parser.add_argument("--dataset", type=Path, default=Path("eval/primary-task-projects.json"))
     parser.add_argument("--output", type=Path, default=Path("data/eval-current.json"))
     parser.add_argument("--limit", type=int, default=20)
-    parser.add_argument("--responses", action="store_true")
-    parser.add_argument("--responses-only", action="store_true")
     parser.add_argument("--live", action="store_true", help="Use paid AI API tokens")
     args = parser.parse_args()
     if not args.live:

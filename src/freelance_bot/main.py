@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import aiohttp
 from dotenv import load_dotenv
 
-from freelance_bot.ai import InsufficientPortfolioCasesError, ProjectAdvisor, create_advisor
+from freelance_bot.ai import ProjectAdvisor, create_advisor
 from freelance_bot.config import Settings
 from freelance_bot.config_texts import ConfigTextManager
 from freelance_bot.fl_mail import GmailFlMailbox, format_fl_notification
@@ -51,7 +51,6 @@ from freelance_bot.vk import (
     format_message,
     keyboard_json,
     project_keyboard_json,
-    response_variants_keyboard_json,
     responses_keyboard_json,
     settings_keyboard_json,
     source_settings_keyboard_json,
@@ -379,7 +378,6 @@ async def _listen_for_commands(
     config_texts: ConfigTextManager,
     project_filters: ProjectFilterManager,
 ) -> None:
-    response_lock = asyncio.Lock()
     response_source = "Kwork"
 
     async def edit_project_message(event: BotCommand, message: str, keyboard: str) -> None:
@@ -487,34 +485,6 @@ async def _listen_for_commands(
             config_texts_keyboard_json(),
         )
 
-    async def refresh_project_description(project: Project) -> Project:
-        if project.description:
-            return project
-        try:
-            if project.source == "Kwork":
-                async with kwork_lock:
-                    projects = await kwork_source.fetch()
-            elif project.source == "FL.ru":
-                async with fl_lock:
-                    projects = await fl_source.fetch()
-            elif project.source == "Profi.ru" and profi_source is not None:
-                async with profi_lock:
-                    projects = await profi_source.fetch()
-            else:
-                return project
-        except Exception:
-            LOGGER.warning(
-                "Не удалось обновить описание проекта %s перед AI-откликом",
-                project.key,
-                exc_info=True,
-            )
-            return project
-        refreshed = next((item for item in projects if item.key == project.key), None)
-        if refreshed is not None:
-            store.remember_project(refreshed)
-            return refreshed
-        return project
-
     async def handle(event: BotCommand) -> None:
         nonlocal response_source
         command = event.name
@@ -564,7 +534,7 @@ async def _listen_for_commands(
         if command == COMMAND_SET_CONFIG_TEXT:
             if event.config_key is None:
                 await show_notice(
-                    "⚠️ Укажите файл: /set profile, /set filter или /set response.",
+                    "⚠️ Укажите файл: /set filter.",
                     config_texts_keyboard_json(),
                 )
                 return
@@ -590,89 +560,8 @@ async def _listen_for_commands(
             )
             return
         if command in {COMMAND_WRITE_RESPONSE, COMMAND_REWRITE_RESPONSE}:
-            if event.project_key is None:
-                return
-            if response_lock.locked():
-                await bot.send_text(
-                    "⏳ Предыдущий вариант отклика ещё создаётся.", keyboard=False
-                )
-                return
-            project = store.get_project(event.project_key)
-            if project is None:
-                LOGGER.warning("Проект для AI-отклика не найден: %s", event.project_key)
-                await bot.send_text("⚠️ Проект не найден в локальной истории.", keyboard=False)
-                return
-            assessment = store.get_ai_assessment(project.key)
-            if advisor is None:
-                await bot.send_text(
-                    "⚠️ AI отключён. Проверьте AI_ENABLED и ключ API.",
-                    keyboard=False,
-                )
-                return
-            project = await refresh_project_description(project)
-            previous_response = store.get_ai_response(project.key)
-            if command == COMMAND_REWRITE_RESPONSE and (
-                not previous_response or event.response_action is None
-            ):
-                await bot.send_text(
-                    "⚠️ Исходный отклик не найден. Создайте его заново из карточки проекта.",
-                    keyboard=False,
-                )
-                return
-            async with response_lock:
-                try:
-                    if command == COMMAND_WRITE_RESPONSE and assessment is None:
-                        try:
-                            assessment = await advisor.assess(project)
-                            store.remember_ai_assessment(assessment)
-                        except Exception:
-                            LOGGER.warning(
-                                "AI-оценка %s недоступна; пишу отклик без неё",
-                                project.key,
-                                exc_info=True,
-                            )
-                    response_text = await advisor.generate_response(
-                        project,
-                        previous_response=previous_response,
-                        variation=(
-                            event.response_action
-                            if command == COMMAND_REWRITE_RESPONSE
-                            else None
-                        ),
-                    )
-                    store.remember_ai_response(
-                        project.key,
-                        response_text,
-                        advisor.response_model,
-                    )
-                except InsufficientPortfolioCasesError as error:
-                    await bot.send_text(f"⚠️ {error}", keyboard=False)
-                    return
-                except Exception:
-                    LOGGER.exception("Не удалось создать AI-отклик для %s", project.key)
-                    await bot.send_text(
-                        "⚠️ Не удалось написать отклик. Попробуйте нажать кнопку ещё раз.",
-                        keyboard=False,
-                    )
-                    return
-            variants_keyboard = response_variants_keyboard_json(project.key)
-            if (
-                command == COMMAND_REWRITE_RESPONSE
-                and event.event_id is not None
-                and event.conversation_message_id is not None
-            ):
-                try:
-                    await bot.edit_text(
-                        event.conversation_message_id,
-                        response_text,
-                        keyboard=variants_keyboard,
-                    )
-                    return
-                except Exception:
-                    LOGGER.warning(
-                        "Не удалось заменить сообщение с AI-откликом", exc_info=True
-                    )
-            await bot.send_text(response_text, keyboard=variants_keyboard)
+            # Old messages can still contain callbacks from the removed feature.
+            await bot.send_text("Генерация откликов удалена из бота.", keyboard=False)
             return
         if command == COMMAND_RESPONDED:
             if event.project_key is None:
@@ -784,11 +673,7 @@ async def run(settings: Settings) -> None:
     kwork_source = KworkSource(settings.kwork_login, settings.kwork_password)
     advisor: ProjectAdvisor | None = None
     config_texts = ConfigTextManager(
-        profile_path=settings.ai_profile_path,
         filter_prompt_path=settings.ai_filter_prompt_path,
-        response_prompt_path=settings.ai_response_prompt_path,
-        portfolio_path=settings.ai_portfolio_path,
-        response_skill_path=settings.ai_response_skill_path,
     )
     profi_source: ProfiSource | None = None
     try:
@@ -796,11 +681,10 @@ async def run(settings: Settings) -> None:
             advisor = create_advisor(settings)
             await advisor.__aenter__()
             LOGGER.info(
-                "AI включён: провайдер=%s, фильтр=%s, резерв=%s, отклики=%s, только accept",
+                "AI включён: провайдер=%s, фильтр=%s, резерв=%s, только accept",
                 settings.ai_provider,
                 advisor.filter_model,
                 advisor.filter_fallback_model,
-                advisor.response_model,
             )
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             fl_source = FlSource(session)
@@ -836,7 +720,7 @@ async def run(settings: Settings) -> None:
                     "Уведомления о сообщениях FL.ru отключены: заполните "
                     "FL_GMAIL_ADDRESS и FL_GMAIL_APP_PASSWORD в .env"
                 )
-            if store.get_state("vk_keyboard_version") != "12":
+            if store.get_state("vk_keyboard_version") != "13":
                 try:
                     await bot.clear_persistent_keyboard()
                 except Exception:
@@ -857,7 +741,7 @@ async def run(settings: Settings) -> None:
                             "Не удалось обновить кнопки старых проектов VK",
                             exc_info=True,
                         )
-                    store.set_state("vk_keyboard_version", "12")
+                    store.set_state("vk_keyboard_version", "13")
                 except Exception:
                     LOGGER.warning(
                         "Не удалось установить постоянную клавиатуру VK",

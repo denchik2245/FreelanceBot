@@ -38,7 +38,8 @@ def test_old_assessments_get_empty_revision_and_keep_response(tmp_path: Path) ->
             )
         )
         assert store.get_ai_assessment("Kwork:42").score == 10
-        assert store.get_ai_response("Kwork:42") == "Saved response"
+        assert store.get_ai_assessment("Kwork:42").response_text == "Saved response"
+        assert store.get_ai_assessment("Kwork:42").requirements_clear is None
     finally:
         store.close()
     # Opening an already migrated database must retain the new cache metadata.

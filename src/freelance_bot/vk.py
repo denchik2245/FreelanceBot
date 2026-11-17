@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from freelance_bot.models import AiAssessment, Project
+from freelance_bot.project_rating import rate_project
 from freelance_bot.storage import RESPONSE_OUTCOMES, RESPONSE_SOURCES
 
 LOGGER = logging.getLogger(__name__)
@@ -40,7 +41,6 @@ COMMAND_SOURCE_SETTINGS = "source_settings"
 COMMAND_FILTER_SETTINGS = "filter_settings"
 COMMAND_EDIT_FILTER = "edit_filter"
 COMMAND_UPDATE_FILTER = "update_filter"
-RESPONSE_ACTIONS = {"different", "shorter", "formal", "friendly", "question"}
 FILTER_NAMES = {"score", "budget"}
 DISPLAY_TZ = timezone(timedelta(hours=5))
 ALL_COMMANDS = {
@@ -84,7 +84,6 @@ class BotCommand:
     content: str | None = None
     document_url: str | None = None
     document_name: str | None = None
-    response_action: str | None = None
     filter_name: str | None = None
     source: str | None = None
     outcome: str | None = None
@@ -120,6 +119,8 @@ def format_message(
         if published.tzinfo is None:
             published = published.replace(tzinfo=UTC)
         lines.append(f"🕒 {published.astimezone(DISPLAY_TZ):%d.%m.%Y %H:%M}")
+    rating = rate_project(project, assessment)
+    lines.append(f"🏷 Уровень {rating.level} — {rating.reason}")
     lines.extend(("", project.url))
     if assessment is not None:
         summary = assessment.summary or project.title
@@ -179,37 +180,7 @@ def project_keyboard_json(project_key: str, decision: str | None = None) -> str:
                         "positive" if decision == "responded" else "secondary",
                     )
                 ],
-                [button("✍ Написать отклик", COMMAND_WRITE_RESPONSE, "primary")],
             ],
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
-
-def response_variants_keyboard_json(project_key: str) -> str:
-    def button(label: str, action: str) -> dict[str, Any]:
-        return {
-            "action": {
-                "type": "callback",
-                "label": label,
-                "payload": json.dumps(
-                    {
-                        "command": COMMAND_REWRITE_RESPONSE,
-                        "project_key": project_key,
-                        "response_action": action,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-            "color": "secondary",
-        }
-
-    return json.dumps(
-        {
-            "one_time": False,
-            "inline": True,
-            "buttons": [[button("🔄 Другой вариант", "different")]],
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -331,10 +302,7 @@ def config_texts_keyboard_json() -> str:
         }
 
     buttons = [
-        [button("👤 Профиль исполнителя", "profile")],
         [button("🔎 Промпт отбора", "filter")],
-        [button("✍ Промпт отклика", "response")],
-        [button("🗂 Портфолио (JSON)", "portfolio")],
         [
             {
                 "action": {
@@ -473,7 +441,6 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
         if command in ALL_COMMANDS:
             project_key = payload.get("project_key")
             config_key = payload.get("config_key")
-            response_action = payload.get("response_action")
             filter_name = payload.get("filter_name")
             source = payload.get("source")
             outcome = payload.get("outcome")
@@ -488,11 +455,8 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
                 str(message["event_id"]) if message.get("event_id") else None,
                 config_key=(
                     str(config_key)
-                    if config_key in {"profile", "filter", "response", "portfolio"}
+                    if config_key in {"filter"}
                     else None
-                ),
-                response_action=(
-                    str(response_action) if response_action in RESPONSE_ACTIONS else None
                 ),
                 filter_name=str(filter_name) if filter_name in FILTER_NAMES else None,
                 source=str(source) if source in RESPONSE_SOURCES else None,
@@ -506,7 +470,7 @@ def parse_command(message: dict[str, Any]) -> BotCommand | None:
     command_parts = first_line.strip().casefold().split(maxsplit=1)
     if command_parts and command_parts[0] in {"/config", "/set"}:
         key = command_parts[1] if len(command_parts) == 2 else None
-        if key is not None and key not in {"profile", "filter", "response", "portfolio"}:
+        if key is not None and key not in {"filter"}:
             return None
         if command_parts[0] == "/config":
             return BotCommand(

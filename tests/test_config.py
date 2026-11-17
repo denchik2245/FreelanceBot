@@ -30,10 +30,8 @@ def test_ai_settings_are_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.ai_enabled
     assert settings.ai_min_score == 82
     assert settings.ai_filter_prompt_path.as_posix() == "config/prompts/project_filter.txt"
-    assert settings.ai_response_prompt_path.as_posix() == "config/prompts/response_writer.txt"
     assert settings.gigachat_filter_model == "GigaChat-2-Pro"
     assert settings.gigachat_filter_fallback_model == "GigaChat-2-Max"
-    assert settings.gigachat_response_model == "GigaChat-3-Ultra"
 
 
 def test_ai_rejects_empty_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,7 +55,6 @@ def test_deepseek_needs_its_own_key_only(monkeypatch: pytest.MonkeyPatch) -> Non
     assert settings.ai_provider == "deepseek"
     assert settings.deepseek_filter_model == "deepseek-flash"
     assert settings.deepseek_filter_fallback_model == "deepseek-flash"
-    assert settings.deepseek_response_model == "deepseek-flash"
 
 
 def test_deepseek_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,7 +72,6 @@ def test_deepseek_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
     ("DEEPSEEK_BASE_URL", "http://api.deepseek.com", "HTTPS"),
     ("DEEPSEEK_FILTER_MODEL", "", "не могут быть пустыми"),
     ("DEEPSEEK_FILTER_FALLBACK_MODEL", "", "не могут быть пустыми"),
-    ("DEEPSEEK_RESPONSE_MODEL", "", "не могут быть пустыми"),
 ])
 def test_deepseek_invalid_settings(
     monkeypatch: pytest.MonkeyPatch, field: str, value: str, match: str,

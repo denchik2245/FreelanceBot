@@ -49,6 +49,14 @@ class ProjectStore:
             self._connection.execute(
                 "ALTER TABLE project_catalog ADD COLUMN publication_id TEXT NOT NULL DEFAULT ''"
             )
+        for column, sql_type in (
+            ("offers_count", "INTEGER"), ("client_projects_count", "INTEGER"),
+            ("client_hired_percent", "REAL"),
+        ):
+            if column not in catalog_columns:
+                self._connection.execute(
+                    f"ALTER TABLE project_catalog ADD COLUMN {column} {sql_type}"
+                )
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS project_feedback (
@@ -92,17 +100,6 @@ class ProjectStore:
             )
             """
         )
-        self._connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS project_ai_responses (
-                project_key TEXT PRIMARY KEY,
-                response_text TEXT NOT NULL,
-                response_model TEXT NOT NULL,
-                generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(project_key) REFERENCES project_catalog(project_key)
-            )
-            """
-        )
         assessment_columns = {
             str(row[1])
             for row in self._connection.execute(
@@ -117,6 +114,10 @@ class ProjectStore:
             self._connection.execute(
                 "ALTER TABLE project_ai_assessments "
                 "ADD COLUMN filter_revision TEXT NOT NULL DEFAULT ''"
+            )
+        if "requirements_clear" not in assessment_columns:
+            self._connection.execute(
+                "ALTER TABLE project_ai_assessments ADD COLUMN requirements_clear INTEGER"
             )
         for column in ("decision", "evidence"):
             if column not in assessment_columns:
@@ -139,13 +140,15 @@ class ProjectStore:
         }
         if "source" not in columns:
             self._connection.execute("ALTER TABLE seen_projects ADD COLUMN source TEXT")
-        self._connection.execute(
-            """
-            UPDATE seen_projects
-            SET source = substr(project_key, 1, instr(project_key, ':') - 1)
-            WHERE source IS NULL AND instr(project_key, ':') > 0
-            """
-        )
+            # Backfill only when introducing the column. Later NULLs explicitly
+            # exclude old/irrelevant projects from statistics and must survive restarts.
+            self._connection.execute(
+                """
+                UPDATE seen_projects
+                SET source = substr(project_key, 1, instr(project_key, ':') - 1)
+                WHERE source IS NULL AND instr(project_key, ':') > 0
+                """
+            )
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS state (
@@ -247,7 +250,7 @@ class ProjectStore:
             baseline = baseline.astimezone(UTC)
         current = current_published_at
         if current.tzinfo is None:
-            current = current.replace(tzinfo=UTC)
+            current = current.replace(tzinfo=timezone.utc)
         else:
             current = current.astimezone(UTC)
         return current <= baseline + timedelta(seconds=1)
@@ -271,8 +274,9 @@ class ProjectStore:
             """
             INSERT INTO project_catalog(
                 project_key, source, external_id, title, description,
-                price, url, category, published_at, publication_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                price, url, category, published_at, publication_id,
+                offers_count, client_projects_count, client_hired_percent
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(project_key) DO UPDATE SET
                 title = excluded.title,
                 description = excluded.description,
@@ -281,6 +285,9 @@ class ProjectStore:
                 category = excluded.category,
                 published_at = excluded.published_at,
                 publication_id = excluded.publication_id,
+                offers_count = excluded.offers_count,
+                client_projects_count = excluded.client_projects_count,
+                client_hired_percent = excluded.client_hired_percent,
                 last_seen_at = CURRENT_TIMESTAMP
             """,
             (
@@ -294,46 +301,21 @@ class ProjectStore:
                 project.category,
                 published_at,
                 project.publication_id,
+                project.offers_count,
+                project.client_projects_count,
+                project.client_hired_percent,
             ),
         )
         self._connection.commit()
-
-    def remember_ai_response(self, project_key: str, response_text: str, model: str) -> None:
-        self._connection.execute(
-            """
-            INSERT INTO project_ai_responses(
-                project_key, response_text, response_model, generated_at
-            )
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(project_key) DO UPDATE SET
-                response_text = excluded.response_text,
-                response_model = excluded.response_model,
-                generated_at = CURRENT_TIMESTAMP
-            """,
-            (project_key, response_text, model),
-        )
-        self._connection.commit()
-
-    def get_ai_response(self, project_key: str) -> str:
-        row = self._connection.execute(
-            "SELECT response_text FROM project_ai_responses WHERE project_key = ?",
-            (project_key,),
-        ).fetchone()
-        if row is not None:
-            return str(row[0])
-        legacy = self._connection.execute(
-            "SELECT response_text FROM project_ai_assessments WHERE project_key = ?",
-            (project_key,),
-        ).fetchone()
-        return str(legacy[0]) if legacy is not None and legacy[0] else ""
 
     def remember_ai_assessment(self, assessment: AiAssessment) -> None:
         self._connection.execute(
             """
             INSERT INTO project_ai_assessments(
                 project_key, suitable, score, reason, summary, response_text,
-                filter_model, response_model, filter_revision, decision, evidence, analyzed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+                filter_model, response_model, filter_revision, decision, evidence,
+                requirements_clear, analyzed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
             ON CONFLICT(project_key) DO UPDATE SET
                 suitable = excluded.suitable,
                 score = excluded.score,
@@ -346,6 +328,7 @@ class ProjectStore:
                 filter_revision = excluded.filter_revision,
                 decision = excluded.decision,
                 evidence = excluded.evidence,
+                requirements_clear = excluded.requirements_clear,
                 analyzed_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
             """,
             (
@@ -360,6 +343,7 @@ class ProjectStore:
                 assessment.filter_revision,
                 assessment.decision,
                 assessment.evidence,
+                assessment.requirements_clear,
             ),
         )
         self._connection.commit()
@@ -368,7 +352,7 @@ class ProjectStore:
         row = self._connection.execute(
             """
             SELECT suitable, score, reason, summary, response_text, filter_model, response_model,
-                   filter_revision, decision, evidence
+                   filter_revision, decision, evidence, requirements_clear
             FROM project_ai_assessments
             WHERE project_key = ?
             """,
@@ -388,6 +372,7 @@ class ProjectStore:
             filter_revision=str(row[7]),
             decision=str(row[8]),
             evidence=str(row[9]),
+            requirements_clear=bool(row[10]) if row[10] is not None else None,
         )
 
     def mark_ai_rejected(self, project_key: str) -> None:
@@ -525,7 +510,8 @@ class ProjectStore:
         row = self._connection.execute(
             """
             SELECT source, external_id, title, description, price, url, category,
-                   published_at, publication_id
+                   published_at, publication_id,
+                   offers_count, client_projects_count, client_hired_percent
             FROM project_catalog WHERE project_key = ?
             """,
             (project_key,),
@@ -543,6 +529,9 @@ class ProjectStore:
             category=row[6],
             published_at=published_at,
             publication_id=str(row[8]),
+            offers_count=row[9],
+            client_projects_count=row[10],
+            client_hired_percent=row[11],
         )
 
     def get_project_feedback(self, project_key: str) -> tuple[str, str | None] | None:

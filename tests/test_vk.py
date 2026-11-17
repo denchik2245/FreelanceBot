@@ -10,11 +10,9 @@ from freelance_bot.vk import (
     COMMAND_CONFIG_TEXTS,
     COMMAND_FILTER_SETTINGS,
     COMMAND_RESPONDED,
-    COMMAND_REWRITE_RESPONSE,
     COMMAND_SET_CONFIG_TEXT,
     COMMAND_SETTINGS,
     COMMAND_UPDATE_FILTER,
-    COMMAND_WRITE_RESPONSE,
     VkApiError,
     VkBot,
     filter_settings_keyboard_json,
@@ -22,7 +20,6 @@ from freelance_bot.vk import (
     keyboard_json,
     parse_command,
     project_keyboard_json,
-    response_variants_keyboard_json,
     responses_keyboard_json,
     settings_keyboard_json,
     source_settings_keyboard_json,
@@ -62,18 +59,18 @@ def test_parse_config_view_and_inline_replacement() -> None:
 def test_parse_config_replacement_from_txt_attachment() -> None:
     replacement = parse_command(
         {
-            "text": "/set response",
+            "text": "/set filter",
             "attachments": [
                 {
                     "type": "doc",
-                    "doc": {"title": "response.txt", "url": "https://vk.example/file"},
+                    "doc": {"title": "filter.txt", "url": "https://vk.example/file"},
                 }
             ],
         }
     )
 
     assert replacement is not None
-    assert replacement.document_name == "response.txt"
+    assert replacement.document_name == "filter.txt"
     assert replacement.document_url == "https://vk.example/file"
 
 
@@ -101,12 +98,6 @@ def test_parse_project_action() -> None:
     assert event.name == COMMAND_RESPONDED
     assert event.project_key == "Kwork:123"
 
-    response_payload = keyboard["buttons"][1][0]["action"]["payload"]
-    response_event = parse_command({"payload": response_payload})
-    assert response_event is not None
-    assert response_event.name == COMMAND_WRITE_RESPONSE
-    assert response_event.project_key == "Kwork:123"
-
 
 def test_project_decision_changes_button_state() -> None:
     neutral = json.loads(project_keyboard_json("Kwork:123"))["buttons"][0]
@@ -117,30 +108,6 @@ def test_project_decision_changes_button_state() -> None:
     responded = json.loads(project_keyboard_json("Kwork:123", "responded"))["buttons"][0]
     assert responded[0]["action"]["label"] == "✅ Откликнулся"
     assert responded[0]["color"] == "positive"
-
-    write_response = json.loads(project_keyboard_json("Kwork:123"))["buttons"][1][0]
-    assert write_response["action"]["label"] == "✍ Написать отклик"
-    assert write_response["color"] == "primary"
-
-
-def test_generated_response_keyboard_has_one_revision_action() -> None:
-    keyboard = json.loads(response_variants_keyboard_json("Kwork:123"))
-    buttons = [button for row in keyboard["buttons"] for button in row]
-    labels = [button["action"]["label"] for button in buttons]
-
-    assert keyboard["inline"] is True
-    assert labels == ["🔄 Другой вариант"]
-    event = parse_command(
-        {
-            "payload": buttons[0]["action"]["payload"],
-            "conversation_message_id": 55,
-            "event_id": "event-2",
-        }
-    )
-    assert event is not None
-    assert event.name == COMMAND_REWRITE_RESPONSE
-    assert event.project_key == "Kwork:123"
-    assert event.response_action == "different"
 
 
 @pytest.mark.parametrize("source", ["Kwork", "FL.ru", "Profi.ru"])
@@ -197,7 +164,10 @@ def test_project_message_uses_compact_format_and_display_timezone() -> None:
         datetime(2026, 7, 17, 12, 30, tzinfo=UTC),
     )
     message = format_message(project)
-    assert message == ("Kwork.ru\n\nМакет\n💰 до 500 ₽\n🕒 17.07.2026 17:30\n\nhttps://x")
+    assert message == (
+        "Kwork.ru\n\nМакет\n💰 до 500 ₽\n🕒 17.07.2026 17:30\n"
+        "🏷 Уровень В — бюджет ниже 3 000 ₽\n\nhttps://x"
+    )
     assert "Описание" not in message
 
 
